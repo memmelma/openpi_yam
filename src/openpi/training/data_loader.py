@@ -148,6 +148,16 @@ def create_torch_dataset(
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
 
+    if data_config.reward_name is not None:
+        from openpi.training import rewards as _rewards
+
+        lookup = _rewards.RewardLookup(
+            repo_id=repo_id,
+            reward_name=data_config.reward_name,
+            action_horizon=action_horizon,
+        )
+        dataset = TransformedDataset(dataset, [_rewards.AddRewardWeight(lookup=lookup)])
+
     return dataset
 
 
@@ -537,4 +547,11 @@ class DataLoaderImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
-            yield _model.Observation.from_dict(batch), batch["actions"]
+            observation = _model.Observation.from_dict(batch)
+            actions = batch["actions"]
+            weights = batch.get("weight")
+            if weights is None:
+                weights = np.ones(actions.shape[0], dtype=np.float32)
+            else:
+                weights = np.asarray(weights, dtype=np.float32)
+            yield observation, actions, weights

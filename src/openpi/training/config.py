@@ -91,6 +91,12 @@ class DataConfig:
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
 
+    # If set, load sidecar reward arrays under
+    # ``$HF_LEROBOT_HOME/<repo_id>/meta/rewards/<reward_name>/episode_*.npy``
+    # and emit a per-sample scalar ``weight`` for reward-weighted BC. ``None``
+    # leaves the data pipeline (and loss) unchanged.
+    reward_name: str | None = None
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -371,19 +377,19 @@ class LeRobotYAMDataConfig(DataConfigFactory):
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # Repack: map LeRobot dataset keys to the keys expected by YAMInputs.
+        repack_structure: dict[str, str] = {
+            "observation/image_head": "observation.images.head",
+            "observation/image_left_wrist": "observation.images.left_wrist",
+            "observation/image_right_wrist": "observation.images.right_wrist",
+            "observation/state": "observation.state",
+            "actions": "action",
+            "prompt": "prompt",
+        }
+        if (self.base_config or DataConfig()).reward_name is not None:
+            # Preserve the scalar injected by AddRewardWeight through repack.
+            repack_structure["weight"] = "weight"
         repack_transform = _transforms.Group(
-            inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "observation/image_head": "observation.images.head",
-                        "observation/image_left_wrist": "observation.images.left_wrist",
-                        "observation/image_right_wrist": "observation.images.right_wrist",
-                        "observation/state": "observation.state",
-                        "actions": "action",
-                        "prompt": "prompt",
-                    }
-                )
-            ]
+            inputs=[_transforms.RepackTransform(repack_structure)]
         )
 
         data_transforms = _transforms.Group(
@@ -993,7 +999,7 @@ _CONFIGS = [
         name="pi05_yam",
         model=pi0_config.Pi0Config(pi05=True),
         data=LeRobotYAMDataConfig(
-            repo_id="YOLO2431/place_lock_simple_v2",
+            repo_id="local/block_task_bimanual",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
@@ -1005,7 +1011,7 @@ _CONFIGS = [
         name="pi05_yam_low_mem",
         model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
         data=LeRobotYAMDataConfig(
-            repo_id="YOLO2431/yam_place_lock_simple",
+            repo_id="local/block_task_bimanual",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
@@ -1052,6 +1058,7 @@ _CONFIGS = [
         exp_name="debug_pi05",
         wandb_enabled=False,
     ),
+
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
