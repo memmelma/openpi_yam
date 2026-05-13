@@ -1,8 +1,8 @@
 #!/bin/bash
 
-$CONFIG="weighted_bc_tillicum"
+CONFIG="weighted_bc_local"
 
-uv run scripts/compute_norm_stats.py --config-name=$CONFIG
+# uv run scripts/compute_norm_stats.py --config-name=$CONFIG
 
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py \
     $CONFIG \
