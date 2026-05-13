@@ -1,7 +1,7 @@
 """Sidecar reward loading for weighted behavior cloning.
 
 Reward arrays produced by ``scripts/annotate_rewards.py`` live under
-``$HF_LEROBOT_HOME/<repo_id>/meta/rewards/<reward_name>/episode_*.npy``. This
+``<lerobot_home or $HF_LEROBOT_HOME>/<repo_id>/meta/rewards/<reward_name>/episode_*.npy``. This
 module reads them at training time and exposes them as a per-sample scalar
 ``weight`` via a :class:`~openpi.transforms.DataTransformFn`, so the rest of
 the data pipeline (collation, normalization, sharding) is untouched.
@@ -21,8 +21,16 @@ import openpi.transforms as _transforms
 class RewardLookup:
     """Lazy per-episode reward loader with action-chunk mean aggregation."""
 
-    def __init__(self, repo_id: str, reward_name: str, action_horizon: int) -> None:
-        self._dir = Path(HF_LEROBOT_HOME) / repo_id / "meta" / "rewards" / reward_name
+    def __init__(
+        self,
+        repo_id: str,
+        reward_name: str,
+        action_horizon: int,
+        *,
+        lerobot_home: str | Path | None = None,
+    ) -> None:
+        base = Path(lerobot_home) if lerobot_home is not None else Path(HF_LEROBOT_HOME)
+        self._dir = base / repo_id / "meta" / "rewards" / reward_name
         if not self._dir.exists():
             raise FileNotFoundError(
                 f"Reward directory {self._dir} not found. Run scripts/annotate_rewards.py first."

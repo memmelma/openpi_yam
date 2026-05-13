@@ -92,10 +92,15 @@ class DataConfig:
     prompt_from_task: bool = False
 
     # If set, load sidecar reward arrays under
-    # ``$HF_LEROBOT_HOME/<repo_id>/meta/rewards/<reward_name>/episode_*.npy``
+    # ``<lerobot_home or $HF_LEROBOT_HOME>/<repo_id>/meta/rewards/<reward_name>/episode_*.npy``
     # and emit a per-sample scalar ``weight`` for reward-weighted BC. ``None``
     # leaves the data pipeline (and loss) unchanged.
     reward_name: str | None = None
+
+    # If set, LeRobot datasets (and reward sidecars when ``reward_name`` is set) load from
+    # ``<lerobot_home>/<repo_id>/`` instead of ``$HF_LEROBOT_HOME/<repo_id>/``. Use this when
+    # ``HF_LEROBOT_HOME`` cannot be changed (it is read once at LeRobot import time).
+    lerobot_home: str | None = None
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -1053,10 +1058,35 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True, paligemma_variant="dummy", action_expert_variant="dummy"),
         data=FakeDataConfig(),
         batch_size=2,
-        num_train_steps=10,
         overwrite=True,
         exp_name="debug_pi05",
         wandb_enabled=False,
+    ),
+
+    # weighted BC training
+    TrainConfig(
+        name="weighted_bc_tillicum",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/block_bowl",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="rvlm_max_reward",
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=30_000,
+        batch_size=4,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
     ),
 
     # RoboArena & PolaRiS configs.
