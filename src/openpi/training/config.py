@@ -1081,7 +1081,7 @@ _CONFIGS = [
         checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
         assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
         num_train_steps=30_000,
-        batch_size=4,
+        batch_size=32,
         num_workers=8,
         freeze_filter=pi0_config.Pi0Config(
             pi05=True, paligemma_variant="gemma_2b_lora"
@@ -1100,7 +1100,7 @@ _CONFIGS = [
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
         num_train_steps=30_000,
-        batch_size=4,
+        batch_size=32,
         num_workers=8,
         freeze_filter=pi0_config.Pi0Config(
             pi05=True, paligemma_variant="gemma_2b_lora"
