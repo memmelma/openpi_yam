@@ -7,8 +7,8 @@ CONFIG="weighted_bc_tillicum"
 
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py \
     $CONFIG \
-      --exp-name debug_run_1 \
-      --num-train-steps 15000 \
+      --exp-name black_bowl \
+      --num-train-steps 25000 \
       --overwrite
       # --resume
 exec bash
