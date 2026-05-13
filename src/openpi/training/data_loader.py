@@ -142,12 +142,20 @@ def create_torch_dataset(
         pathlib.Path(data_config.lerobot_home) / repo_id if data_config.lerobot_home is not None else None
     )
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=dataset_root)
+
+    try:
+        import torchcodec
+        torchcodec_available = True
+    except RuntimeError:
+        torchcodec_available = False
+
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
         root=dataset_root,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
+        video_backend="pyav" if not torchcodec_available else None,
     )
 
     if data_config.prompt_from_task:
