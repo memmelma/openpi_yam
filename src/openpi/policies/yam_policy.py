@@ -73,6 +73,9 @@ class YAMInputs(transforms.DataTransformFn):
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
 
+        if "weight" in data:
+            inputs["weight"] = data["weight"]
+
         return inputs
 
 
