@@ -1065,13 +1065,13 @@ _CONFIGS = [
 
     # weighted BC training - tillicum
     TrainConfig(
-        name="weighted_bc_tillicum",
+        name="weighted_bc_tillicum_star_wars",
         model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
         data=LeRobotYAMDataConfig(
-            repo_id="memmelma/block_bowl",
+            repo_id="memmelma/star_wars_shelf_box_switch",
             base_config=DataConfig(
                 prompt_from_task=True,
-                reward_name="rvlm_max_reward",
+                reward_name="default_max_reward",
                 lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
             ),
         ),
@@ -1090,11 +1090,11 @@ _CONFIGS = [
     ),
     # weighted BC training - local
     TrainConfig(
-        name="weighted_bc_local",
+        name="weighted_bc_local_star_wars",
         model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
         data=LeRobotYAMDataConfig(
-            repo_id="memmelma/block_bowl",
-            base_config=DataConfig(prompt_from_task=True, reward_name="rvlm_max_reward"),
+            repo_id="memmelma/star_wars_shelf_box_switch",
+            base_config=DataConfig(prompt_from_task=True, reward_name="default_max_reward"),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
