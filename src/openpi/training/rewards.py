@@ -5,7 +5,7 @@ Reward arrays produced by ``scripts/annotate_rewards{,_joint}.py`` live under
 This module reads them at training time and exposes:
 
 - a per-sample scalar ``weight`` via a :class:`~openpi.transforms.DataTransformFn`
-  (AWR weight ``exp(adv/beta)``, or raw advantage when ``use_exp_weight=False``);
+  (transform selected by ``weight_scheme``; see :class:`RewardLookup`);
 - an optional :class:`FilteredLeRobotDataset` that drops (episode, frame) pairs
   whose weight falls below a global quantile / absolute cutoff, so a training
   batch never contains a zero-weight sample;
@@ -30,6 +30,7 @@ import openpi.transforms as _transforms
 
 logger = logging.getLogger(__name__)
 
+_VALID_SCHEMES = {"default", "awr", "chunk", "awr_chunk"}
 
 # ---------------------------------------------------------------------------
 # RewardLookup: per-episode reward / advantage loader with weight transform
@@ -40,11 +41,15 @@ class RewardLookup:
     """Lazy per-episode reward loader.
 
     Reads ``meta/rewards/<reward_name>/episode_*.npy`` and returns a scalar
-    per-sample weight derived from the action-chunk mean.  The reward_name
-    is expected to point at an *advantage* directory (e.g.
-    ``..._delta_advantage``) when ``use_exp_weight=True``; that's what the
-    annotation script produces and what AWR expects.  When ``use_exp_weight``
-    is False the directory is used as-is (treated as the raw weight).
+    per-sample weight according to ``weight_scheme``:
+
+    - ``"default"``   – stored value used directly as weight (no transform).
+    - ``"awr"``       – AWR: ``exp(value / beta)``.  ``reward_name`` should
+                        point at an advantage directory (e.g. ``..._delta_advantage``).
+    - ``"chunk"``     – on-the-fly advantage ``V(s_{t+N}) - V(s_t)`` where
+                        N = action_horizon.  ``reward_name`` must point at a
+                        *value* directory.
+    - ``"awr_chunk"`` – chunk advantage then ``exp(adv / beta)``.
     """
 
     def __init__(
@@ -55,10 +60,11 @@ class RewardLookup:
         *,
         lerobot_home: str | Path | None = None,
         beta: float = 2.0,
-        use_exp_weight: bool = True,
-        relu_negative_weights: bool = True,
+        weight_scheme: str = "awr",
         weight_clip: float = 100.0,
     ) -> None:
+        if weight_scheme not in _VALID_SCHEMES:
+            raise ValueError(f"weight_scheme must be one of {_VALID_SCHEMES}, got {weight_scheme!r}")
         base = Path(lerobot_home) if lerobot_home is not None else Path(HF_LEROBOT_HOME)
         self._dir = base / repo_id / "meta" / "rewards" / reward_name
         if not self._dir.exists():
@@ -68,8 +74,7 @@ class RewardLookup:
             )
         self._action_horizon = int(action_horizon)
         self._beta = float(beta)
-        self._use_exp_weight = bool(use_exp_weight)
-        self._relu = bool(relu_negative_weights)
+        self._scheme = weight_scheme
         self._clip = float(weight_clip)
         self._cache: dict[int, np.ndarray] = {}
 
@@ -125,8 +130,8 @@ class RewardLookup:
         return self._beta
 
     @property
-    def use_exp_weight(self) -> bool:
-        return self._use_exp_weight
+    def weight_scheme(self) -> str:
+        return self._scheme
 
     def _episode(self, episode_index: int) -> np.ndarray:
         arr = self._cache.get(episode_index)
@@ -150,40 +155,55 @@ class RewardLookup:
             chunk = np.concatenate([chunk, pad], axis=0)
         return np.float32(chunk.mean())
 
+    def _chunk_advantage(self, episode_index: int, frame_index: int) -> np.float32:
+        """Compute V(s_{t+N}) - V(s_t) where N = action_horizon.
+
+        At episode boundaries t+N is clamped to the last frame index.
+        Stored data must represent value function estimates V.
+        """
+        arr = self._episode(int(episode_index))
+        t = int(frame_index)
+        t_next = min(t + self._action_horizon, arr.shape[0] - 1)
+        return np.float32(arr[t_next] - arr[t])
+
     def _transform_weight(self, raw: np.ndarray | float) -> np.ndarray | np.float32:
-        if self._use_exp_weight:
-            out = np.exp(np.clip(np.asarray(raw) / self._beta, -self._clip, self._clip))
-        else:
-            out = np.asarray(raw, dtype=np.float32)
-            if self._relu:
-                out = np.maximum(out, 0.0)
-        return out
+        if self._scheme in ("awr", "awr_chunk"):
+            return np.exp(np.clip(np.asarray(raw) / self._beta, -self._clip, self._clip))
+        return np.asarray(raw, dtype=np.float32)
 
     def weight_for(self, episode_index: int, frame_index: int) -> np.float32:
-        raw = self._chunk_mean(episode_index, frame_index)
+        if self._scheme in ("chunk", "awr_chunk"):
+            raw = self._chunk_advantage(episode_index, frame_index)
+        else:
+            raw = self._chunk_mean(episode_index, frame_index)
         return np.float32(self._transform_weight(raw))
 
     def all_per_frame_weights(self) -> dict[int, np.ndarray]:
-        """Return ``{episode_index: weight_per_frame}`` where each weight is
-        ``transform(chunk_mean(advantage[t:t+H]))``.  Computed using the same
-        chunk-mean as ``weight_for`` so the prefilter and the per-sample
-        ``weight`` agree perfectly."""
+        """Return ``{episode_index: weight_per_frame}`` matching ``weight_for``.
+
+        Used by :class:`FilteredLeRobotDataset` so the prefilter thresholds and
+        the per-sample weights are computed identically.
+        """
         out: dict[int, np.ndarray] = {}
         for path in sorted(self._dir.glob("episode_*.npy")):
             ep_idx = int(path.stem.split("_")[-1])
             arr = self._episode(ep_idx)
-            # Action-chunk mean for every t with replicate-pad at the tail.
             n = arr.shape[0]
             if n == 0:
                 out[ep_idx] = np.zeros(0, dtype=np.float32)
                 continue
             H = self._action_horizon
-            padded = np.concatenate([arr, np.full(max(0, H - 1), arr[-1], dtype=np.float32)])
-            # mean of [t..t+H-1] for each t in [0..n-1]
-            # csum trick: mean = (csum[t+H] - csum[t]) / H
-            csum = np.concatenate([[0.0], np.cumsum(padded.astype(np.float64))])
-            chunk_means = ((csum[H:n + H] - csum[:n]) / H).astype(np.float32)
-            out[ep_idx] = np.asarray(self._transform_weight(chunk_means), dtype=np.float32)
+            if self._scheme in ("chunk", "awr_chunk"):
+                # V(s_{min(t+H, T-1)}) - V(s_t) for every t in [0..n-1]
+                t_next = np.minimum(np.arange(n) + H, n - 1)
+                raw = (arr[t_next] - arr).astype(np.float32)
+            else:
+                # Action-chunk mean for every t with replicate-pad at the tail.
+                padded = np.concatenate([arr, np.full(max(0, H - 1), arr[-1], dtype=np.float32)])
+                # csum trick: mean = (csum[t+H] - csum[t]) / H
+                csum = np.concatenate([[0.0], np.cumsum(padded.astype(np.float64))])
+                raw = ((csum[H:n + H] - csum[:n]) / H).astype(np.float32)
+            out[ep_idx] = np.asarray(self._transform_weight(raw), dtype=np.float32)
         return out
 
 
@@ -343,8 +363,7 @@ def wrap_lerobot_dataset(dataset, data_config, action_horizon: int, *, repo_id: 
         action_horizon=action_horizon,
         lerobot_home=data_config.lerobot_home,
         beta=getattr(data_config, "reward_beta", 2.0),
-        use_exp_weight=getattr(data_config, "use_exp_weight", True),
-        relu_negative_weights=getattr(data_config, "relu_negative_weights", True),
+        weight_scheme=getattr(data_config, "weight_scheme", "awr"),
     )
 
     weight_quantile = getattr(data_config, "weight_quantile", None)
