@@ -123,6 +123,24 @@ class DataConfig:
     # task strings but you want a single instruction during reward-weighted BC.
     override_prompt_from_reward: bool = False
 
+    # ----- CFGRL / π*0.6 advantage-conditioned policy extraction ------------
+    # When True, use CFGRL instead of AWR weighting: a binary "Advantage:
+    # positive/negative" indicator is appended to the prompt based on the
+    # chunk advantage V(s_{t+H})-V(s_t) from the reward sidecar.  Requires
+    # ``reward_name`` to point at a *value function* directory (reward_name
+    # must contain "reward").  ``weight_scheme`` is ignored when this is True
+    # (internally forced to "chunk").
+    cfgrl_enabled: bool = False
+    # Fraction of frames labelled positive (top-k by advantage).
+    # Paper uses 0.30 for pre-training, 0.40 for fine-tuning.
+    cfgrl_positive_quantile: float = 0.30
+    # Probability of omitting the indicator entirely (unconditional branch).
+    # Enables classifier-free guidance at inference time.
+    cfgrl_dropout_prob: float = 0.30
+    # When True, always inject "Advantage: positive" regardless of advantage
+    # value.  Use during SFT / pure-demonstration fine-tune phases.
+    cfgrl_force_positive: bool = False
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -1150,6 +1168,36 @@ _CONFIGS = [
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
         num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL advantage-conditioned BC - local smoke test (same V sidecar as awr_chunk_swb_local)
+    TrainConfig(
+        name="cfgrl_swb_local_smoke",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/swb_joint_05_20",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="move_the_star_wars_book_from_the_book_shelf_to_the_gray_box_rvlm_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        num_train_steps=500,
         batch_size=32,
         num_workers=8,
         freeze_filter=pi0_config.Pi0Config(
