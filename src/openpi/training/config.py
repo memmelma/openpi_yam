@@ -105,13 +105,12 @@ class DataConfig:
     # ----- AWR / weighted-BC reward shaping (see openpi.training.rewards) -----
     # AWR temperature: weight = exp(advantage / reward_beta).  Lower beta = sharper.
     reward_beta: float = 2.0
-    # If False, use the raw advantage as the per-sample weight (standard
-    # weighted BC).  Combined with ``relu_negative_weights`` this gives
-    # ``max(0, advantage)`` as the weight.
-    use_exp_weight: bool = True
-    # When ``use_exp_weight=False``, clip negative weights to zero so the loss
-    # stays non-negative.  Ignored when ``use_exp_weight=True``.
-    relu_negative_weights: bool = True
+    # Weighting scheme applied to the stored reward/value sidecar:
+    #   "default"   – use stored values directly as weights (no transform)
+    #   "awr"       – exp(value / reward_beta)  [AWR]
+    #   "chunk"     – V(s_{t+N}) - V(s_t); stored data must be V values, N = action_horizon
+    #   "awr_chunk" – exp((V(s_{t+N}) - V(s_t)) / reward_beta)
+    weight_scheme: str = "awr"
     # If set, drop the bottom ``weight_quantile * 100`` percent of frames
     # globally (across the whole repo) before training.  ``0.8`` keeps the top
     # 20% of frames.  Combined with ``weight_cutoff`` via ``max(...)``.
@@ -1130,6 +1129,63 @@ _CONFIGS = [
         ema_decay=None,
     ),
 
+
+    # AWR chunk-weighted BC - local (raw rewards as V, no filtering)
+    TrainConfig(
+        name="awr_chunk_swb_local",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/swb_joint_05_20",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="move_the_star_wars_book_from_the_book_shelf_to_the_gray_box_rvlm_reward",
+                reward_beta=2.0,
+                weight_scheme="awr_chunk",
+                weight_quantile=None,
+                weight_cutoff=None,
+                override_prompt_from_reward=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # success only BC training - local
+    TrainConfig(
+        name="bc_swb_local",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/swb_joint_05_20",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                weight_quantile=None,
+                weight_cutoff=0.5,
+                weight_scheme="default",
+                reward_name="success_reward",
+                override_prompt_from_reward=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+
     # success only BC training - tillicum
     TrainConfig(
         name="bc_swb_bimanual",
@@ -1170,7 +1226,7 @@ _CONFIGS = [
                 prompt_from_task=True,
                 weight_quantile=None,
                 weight_cutoff=0.5,
-                use_exp_weight=False,
+                weight_scheme="default",
                 reward_name="success_reward",
                 override_prompt_from_reward=True,
                 lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
@@ -1202,7 +1258,7 @@ _CONFIGS = [
                 reward_beta=2.0,
                 weight_quantile=0.7,
                 weight_cutoff=None,
-                use_exp_weight=True,
+                weight_scheme="awr",
                 override_prompt_from_reward=True,
                 lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
             ),
