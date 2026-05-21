@@ -11,7 +11,13 @@ This module reads them at training time and exposes:
   batch never contains a zero-weight sample;
 - an optional :class:`OverrideTaskPrompt` transform that replaces every
   sample's ``prompt`` with the reward annotation's reference instruction
-  (read from ``<reward_name>/config.json``).
+  (read from ``<reward_name>/config.json``);
+- an optional :class:`AddAdvantageIndicator` transform that implements CFGRL
+  (π*0.6 / Recap) policy extraction: appends ``"Advantage: positive/negative"``
+  to the prompt based on a binarised chunk advantage, with CFG-style dropout.
+  Requires ``reward_name`` to point at a *value function* directory (containing
+  ``episode_*.npy`` files with V(s_t) estimates); enabled via
+  ``data_config.cfgrl_enabled``.
 """
 
 from __future__ import annotations
@@ -65,6 +71,13 @@ class RewardLookup:
     ) -> None:
         if weight_scheme not in _VALID_SCHEMES:
             raise ValueError(f"weight_scheme must be one of {_VALID_SCHEMES}, got {weight_scheme!r}")
+        if weight_scheme in ("chunk", "awr_chunk") and "reward" not in reward_name:
+            raise ValueError(
+                f"weight_scheme={weight_scheme!r} requires episode_*.npy files to contain value "
+                f"function estimates (V(s_t)), so reward_name must contain 'reward' "
+                f"(got {reward_name!r}). AWR-style advantage directories are not compatible "
+                f"with on-the-fly chunk-advantage computation."
+            )
         base = Path(lerobot_home) if lerobot_home is not None else Path(HF_LEROBOT_HOME)
         self._dir = base / repo_id / "meta" / "rewards" / reward_name
         if not self._dir.exists():
@@ -233,6 +246,57 @@ class OverrideTaskPrompt(_transforms.DataTransformFn):
         return {**data, "prompt": np.asarray(self.prompt)}
 
 
+@dataclasses.dataclass(frozen=True)
+class AddAdvantageIndicator(_transforms.DataTransformFn):
+    """CFGRL policy extraction (π*0.6 / Recap): inject a binary advantage indicator.
+
+    Appends ``"\\nAdvantage: positive"`` or ``"\\nAdvantage: negative"`` to the
+    sample's ``prompt`` based on whether the chunk advantage ``V(s_{t+H})-V(s_t)``
+    exceeds ``threshold``.  With probability ``dropout_prob`` the indicator is
+    omitted entirely (unconditional branch), enabling classifier-free guidance
+    at inference time.
+
+    ``threshold`` should be pre-computed from the full dataset so that
+    approximately ``cfgrl_positive_quantile`` of frames receive a positive label
+    (see :func:`wrap_lerobot_dataset`).
+
+    When ``force_positive=True`` (SFT / demo fine-tune phase) every sample is
+    labelled positive regardless of its advantage value.  Dropout still applies
+    unless also disabled.
+
+    The ``lookup`` must have been constructed with ``weight_scheme="chunk"`` so
+    that ``_chunk_advantage`` returns raw ``V(s_{t+H})-V(s_t)`` values.
+
+    Always emits ``weight=1.0`` so :class:`RepackTransform` (which expects
+    ``weight`` whenever ``reward_name`` is set) and the training loop keep working;
+    CFGRL does not use advantage-weighted loss.
+    """
+
+    lookup: RewardLookup
+    threshold: float
+    dropout_prob: float = 0.3
+    positive_text: str = "Advantage: positive"
+    negative_text: str = "Advantage: negative"
+    force_positive: bool = False
+
+    def __call__(self, data):
+        out = {**data, "weight": np.float32(1.0)}
+        if not self.force_positive and np.random.random() < self.dropout_prob:
+            return out  # unconditional branch (no indicator suffix)
+        if self.force_positive:
+            label = self.positive_text
+        else:
+            ep = int(np.asarray(data["episode_index"]).item())
+            frame = int(np.asarray(data["frame_index"]).item())
+            adv = float(self.lookup._chunk_advantage(ep, frame))
+            label = self.positive_text if adv > self.threshold else self.negative_text
+        prompt = data.get("prompt", "")
+        if not isinstance(prompt, str):
+            prompt = np.asarray(prompt).item()
+        out["prompt"] = np.asarray(f"{prompt}\n{label}" if prompt else label)
+        return out
+
+
 # ---------------------------------------------------------------------------
 # FilteredLeRobotDataset: drops (episode, frame) pairs by weight threshold
 # ---------------------------------------------------------------------------
@@ -350,6 +414,12 @@ def wrap_lerobot_dataset(dataset, data_config, action_horizon: int, *, repo_id: 
     Returns the wrapped dataset.  When ``data_config.reward_name`` is ``None``
     the dataset is returned unchanged, preserving full backward compatibility
     with existing configs.
+
+    When ``data_config.cfgrl_enabled`` is ``True`` the dataset uses CFGRL
+    policy extraction instead of AWR sample weighting: a binary advantage
+    indicator (``"Advantage: positive/negative"``) is appended to each
+    sample's prompt with CFG-style dropout.  ``reward_name`` must point at a
+    value function directory (containing ``episode_*.npy`` with V(s_t) estimates).
     """
     if data_config.reward_name is None:
         return dataset
@@ -357,13 +427,15 @@ def wrap_lerobot_dataset(dataset, data_config, action_horizon: int, *, repo_id: 
     # Local import to avoid a circular import (data_loader -> rewards -> data_loader).
     from openpi.training.data_loader import TransformedDataset
 
+    cfgrl_enabled = getattr(data_config, "cfgrl_enabled", False)
+
     lookup = RewardLookup(
         repo_id=repo_id,
         reward_name=data_config.reward_name,
         action_horizon=action_horizon,
         lerobot_home=data_config.lerobot_home,
         beta=getattr(data_config, "reward_beta", 2.0),
-        weight_scheme=getattr(data_config, "weight_scheme", "awr"),
+        weight_scheme="chunk" if cfgrl_enabled else getattr(data_config, "weight_scheme", "awr"),
     )
 
     weight_quantile = getattr(data_config, "weight_quantile", None)
@@ -376,7 +448,31 @@ def wrap_lerobot_dataset(dataset, data_config, action_horizon: int, *, repo_id: 
             weight_cutoff=weight_cutoff,
         )
 
-    transforms: list[_transforms.DataTransformFn] = [AddRewardWeight(lookup=lookup)]
+    if cfgrl_enabled:
+        # Compute global advantage threshold from a single pass over all episode files.
+        # all_per_frame_weights() with scheme="chunk" returns raw V(s_{t+H})-V(s_t).
+        per_ep_adv = lookup.all_per_frame_weights()
+        if not per_ep_adv:
+            raise RuntimeError(f"No reward files found in {lookup.reward_dir} for CFGRL threshold computation.")
+        all_adv = np.concatenate(list(per_ep_adv.values()))
+        positive_quantile = getattr(data_config, "cfgrl_positive_quantile", 0.30)
+        threshold = float(np.quantile(all_adv, 1.0 - positive_quantile))
+        actual_positive_frac = float((all_adv > threshold).mean())
+        logger.info(
+            "CFGRL: threshold=%.4g  (target positive=%.0f%%  actual=%.1f%%  n_frames=%d)",
+            threshold, 100 * positive_quantile, 100 * actual_positive_frac, all_adv.size,
+        )
+        transforms: list[_transforms.DataTransformFn] = [
+            AddAdvantageIndicator(
+                lookup=lookup,
+                threshold=threshold,
+                dropout_prob=getattr(data_config, "cfgrl_dropout_prob", 0.30),
+                force_positive=getattr(data_config, "cfgrl_force_positive", False),
+            )
+        ]
+    else:
+        transforms = [AddRewardWeight(lookup=lookup)]
+
     if getattr(data_config, "override_prompt_from_reward", False):
         if not lookup.reference_instruction:
             raise ValueError(
