@@ -1,25 +1,51 @@
-"""Sidecar reward loading for weighted behavior cloning.
+"""Sidecar reward loading for weighted / filtered behavior cloning.
 
-Reward arrays produced by ``scripts/annotate_rewards.py`` live under
-``<lerobot_home or $HF_LEROBOT_HOME>/<repo_id>/meta/rewards/<reward_name>/episode_*.npy``. This
-module reads them at training time and exposes them as a per-sample scalar
-``weight`` via a :class:`~openpi.transforms.DataTransformFn`, so the rest of
-the data pipeline (collation, normalization, sharding) is untouched.
+Reward arrays produced by ``scripts/annotate_rewards{,_joint}.py`` live under
+``<lerobot_home or $HF_LEROBOT_HOME>/<repo_id>/meta/rewards/<reward_name>/episode_*.npy``.
+This module reads them at training time and exposes:
+
+- a per-sample scalar ``weight`` via a :class:`~openpi.transforms.DataTransformFn`
+  (AWR weight ``exp(adv/beta)``, or raw advantage when ``use_exp_weight=False``);
+- an optional :class:`FilteredLeRobotDataset` that drops (episode, frame) pairs
+  whose weight falls below a global quantile / absolute cutoff, so a training
+  batch never contains a zero-weight sample;
+- an optional :class:`OverrideTaskPrompt` transform that replaces every
+  sample's ``prompt`` with the reward annotation's reference instruction
+  (read from ``<reward_name>/config.json``).
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
+import logging
+import re
 from pathlib import Path
 
 import numpy as np
+import torch.utils.data
 from lerobot.common.constants import HF_LEROBOT_HOME
 
 import openpi.transforms as _transforms
 
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# RewardLookup: per-episode reward / advantage loader with weight transform
+# ---------------------------------------------------------------------------
+
 
 class RewardLookup:
-    """Lazy per-episode reward loader with action-chunk mean aggregation."""
+    """Lazy per-episode reward loader.
+
+    Reads ``meta/rewards/<reward_name>/episode_*.npy`` and returns a scalar
+    per-sample weight derived from the action-chunk mean.  The reward_name
+    is expected to point at an *advantage* directory (e.g.
+    ``..._delta_advantage``) when ``use_exp_weight=True``; that's what the
+    annotation script produces and what AWR expects.  When ``use_exp_weight``
+    is False the directory is used as-is (treated as the raw weight).
+    """
 
     def __init__(
         self,
@@ -28,38 +54,137 @@ class RewardLookup:
         action_horizon: int,
         *,
         lerobot_home: str | Path | None = None,
+        beta: float = 2.0,
+        use_exp_weight: bool = True,
+        relu_negative_weights: bool = True,
+        weight_clip: float = 100.0,
     ) -> None:
         base = Path(lerobot_home) if lerobot_home is not None else Path(HF_LEROBOT_HOME)
         self._dir = base / repo_id / "meta" / "rewards" / reward_name
         if not self._dir.exists():
             raise FileNotFoundError(
-                f"Reward directory {self._dir} not found. Run scripts/annotate_rewards.py first."
+                f"Reward directory {self._dir} not found. "
+                f"Run scripts/annotate_rewards_joint.py first."
             )
         self._action_horizon = int(action_horizon)
+        self._beta = float(beta)
+        self._use_exp_weight = bool(use_exp_weight)
+        self._relu = bool(relu_negative_weights)
+        self._clip = float(weight_clip)
         self._cache: dict[int, np.ndarray] = {}
 
+        # The reference instruction (used by OverrideTaskPrompt) is written by
+        # the annotation script next to the <prefix>_reward/ dir, not next to
+        # advantage/awr dirs.  Try both: same dir and its sibling whose name
+        # ends in ``_reward``.
+        self._reference_instruction: str | None = None
+        for cfg_path in (self._dir / "config.json", self._reward_sibling_config()):
+            if cfg_path is not None and cfg_path.exists():
+                try:
+                    cfg = json.loads(cfg_path.read_text())
+                    self._reference_instruction = cfg.get("reference_instruction") or None
+                    break
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Could not parse %s: %s", cfg_path, e)
+
+    def _reward_sibling_config(self) -> Path | None:
+        """Find the ``<prefix>_reward/config.json`` next to ``<prefix>_*`` dirs.
+
+        Handles the optional ``_g{gamma}_b{beta}`` tag inserted by
+        ``annotate_rewards_joint.py``, e.g.
+        ``<prefix>_g099_b20_delta_advantage`` → ``<prefix>_reward/config.json``.
+        """
+        name = self._dir.name
+        if name.endswith("_reward"):
+            return None  # already the canonical config location
+        # Strip common suffixes (advantage, returns, delta, awr_weights, etc).
+        base = name
+        for suf in (
+            "_delta_awr_weights", "_delta_advantage", "_delta_returns", "_delta",
+            "_awr_weights", "_advantage", "_returns",
+        ):
+            if base.endswith(suf):
+                base = base[: -len(suf)]
+                break
+        # Strip optional _g<digits> gamma tag added by annotate_rewards_joint.py.
+        base = re.sub(r"_g\d+$", "", base)
+        if base == name:
+            return None  # no known suffix was stripped
+        return self._dir.parent / f"{base}_reward" / "config.json"
+
+    @property
+    def reference_instruction(self) -> str | None:
+        return self._reference_instruction
+
+    @property
+    def reward_dir(self) -> Path:
+        return self._dir
+
+    @property
+    def beta(self) -> float:
+        return self._beta
+
+    @property
+    def use_exp_weight(self) -> bool:
+        return self._use_exp_weight
+
     def _episode(self, episode_index: int) -> np.ndarray:
-        rewards = self._cache.get(episode_index)
-        if rewards is None:
+        arr = self._cache.get(episode_index)
+        if arr is None:
             path = self._dir / f"episode_{episode_index:06d}.npy"
             if not path.exists():
                 raise FileNotFoundError(f"Missing reward file: {path}")
-            rewards = np.load(path).astype(np.float32)
-            self._cache[episode_index] = rewards
-        return rewards
+            arr = np.load(path).astype(np.float32)
+            self._cache[episode_index] = arr
+        return arr
 
-    def weight_for(self, episode_index: int, frame_index: int) -> np.float32:
-        rewards = self._episode(int(episode_index))
+    def _chunk_mean(self, episode_index: int, frame_index: int) -> np.float32:
+        arr = self._episode(int(episode_index))
         t = int(frame_index)
-        end = min(t + self._action_horizon, rewards.shape[0])
+        end = min(t + self._action_horizon, arr.shape[0])
         if end <= t:
-            # frame_index at or past the end; replicate-pad on the last frame.
-            return np.float32(rewards[-1])
-        chunk = rewards[t:end]
+            return np.float32(arr[-1])
+        chunk = arr[t:end]
         if chunk.shape[0] < self._action_horizon:
-            pad = np.full(self._action_horizon - chunk.shape[0], rewards[-1], dtype=np.float32)
+            pad = np.full(self._action_horizon - chunk.shape[0], arr[-1], dtype=np.float32)
             chunk = np.concatenate([chunk, pad], axis=0)
         return np.float32(chunk.mean())
+
+    def _transform_weight(self, raw: np.ndarray | float) -> np.ndarray | np.float32:
+        if self._use_exp_weight:
+            out = np.exp(np.clip(np.asarray(raw) / self._beta, -self._clip, self._clip))
+        else:
+            out = np.asarray(raw, dtype=np.float32)
+            if self._relu:
+                out = np.maximum(out, 0.0)
+        return out
+
+    def weight_for(self, episode_index: int, frame_index: int) -> np.float32:
+        raw = self._chunk_mean(episode_index, frame_index)
+        return np.float32(self._transform_weight(raw))
+
+    def all_per_frame_weights(self) -> dict[int, np.ndarray]:
+        """Return ``{episode_index: weight_per_frame}`` where each weight is
+        ``transform(chunk_mean(advantage[t:t+H]))``.  Computed using the same
+        chunk-mean as ``weight_for`` so the prefilter and the per-sample
+        ``weight`` agree perfectly."""
+        out: dict[int, np.ndarray] = {}
+        for path in sorted(self._dir.glob("episode_*.npy")):
+            ep_idx = int(path.stem.split("_")[-1])
+            arr = self._episode(ep_idx)
+            # Action-chunk mean for every t with replicate-pad at the tail.
+            n = arr.shape[0]
+            if n == 0:
+                out[ep_idx] = np.zeros(0, dtype=np.float32)
+                continue
+            H = self._action_horizon
+            padded = np.concatenate([arr, np.full(max(0, H - 1), arr[-1], dtype=np.float32)])
+            # mean of [t..t+H-1] for each t in [0..n-1]
+            # csum trick: mean = (csum[t+H] - csum[t]) / H
+            csum = np.concatenate([[0.0], np.cumsum(padded.astype(np.float64))])
+            chunk_means = ((csum[H:n + H] - csum[:n]) / H).astype(np.float32)
+            out[ep_idx] = np.asarray(self._transform_weight(chunk_means), dtype=np.float32)
+        return out
 
 
 @dataclasses.dataclass(frozen=True)
@@ -72,3 +197,168 @@ class AddRewardWeight(_transforms.DataTransformFn):
         ep = int(np.asarray(data["episode_index"]).item())
         frame = int(np.asarray(data["frame_index"]).item())
         return {**data, "weight": self.lookup.weight_for(ep, frame)}
+
+
+@dataclasses.dataclass(frozen=True)
+class OverrideTaskPrompt(_transforms.DataTransformFn):
+    """Replace ``data['prompt']`` with the reward annotation's reference instruction.
+
+    Distinguished from :class:`openpi.transforms.InjectDefaultPrompt` which
+    only injects when no prompt is present; here we always overwrite.
+    """
+
+    prompt: str
+
+    def __call__(self, data):
+        return {**data, "prompt": np.asarray(self.prompt)}
+
+
+# ---------------------------------------------------------------------------
+# FilteredLeRobotDataset: drops (episode, frame) pairs by weight threshold
+# ---------------------------------------------------------------------------
+
+
+class FilteredLeRobotDataset(torch.utils.data.Dataset):
+    """Wrap a LeRobotDataset to expose only frames whose weight passes the
+    quantile / cutoff threshold.
+
+    The underlying LeRobotDataset is indexed by a single global frame index
+    (``episode_data_index['from'][ep] + frame``).  We materialise the list of
+    valid global indices up-front from the lookup's per-frame weights.
+    """
+
+    def __init__(
+        self,
+        dataset,
+        lookup: RewardLookup,
+        *,
+        weight_quantile: float | None = None,
+        weight_cutoff: float | None = None,
+    ) -> None:
+        self._dataset = dataset
+        self._lookup = lookup
+
+        per_ep_weights = lookup.all_per_frame_weights()
+        if not per_ep_weights:
+            raise RuntimeError(f"No reward files found in {lookup.reward_dir}")
+
+        ep_from = self._episode_starts(dataset)
+
+        # Build the threshold using ALL per-frame weights so the quantile is global.
+        all_w = np.concatenate(list(per_ep_weights.values())) if per_ep_weights else np.zeros(0)
+        thresholds = []
+        if weight_quantile is not None and all_w.size:
+            thresholds.append(float(np.quantile(all_w, float(weight_quantile))))
+        if weight_cutoff is not None:
+            thresholds.append(float(weight_cutoff))
+        self._threshold: float = max(thresholds) if thresholds else float("-inf")
+
+        valid_global: list[int] = []
+        kept = total = 0
+        for ep_idx, w in per_ep_weights.items():
+            if ep_idx not in ep_from:
+                logger.warning(
+                    "Reward file for episode %d has no matching episode start; skipping.", ep_idx
+                )
+                continue
+            n = w.shape[0]
+            mask = w >= self._threshold if np.isfinite(self._threshold) else np.ones(n, dtype=bool)
+            local_idx = np.flatnonzero(mask)
+            valid_global.extend((ep_from[ep_idx] + int(t)) for t in local_idx)
+            kept += int(local_idx.size)
+            total += int(n)
+
+        self._valid_indices = np.asarray(valid_global, dtype=np.int64)
+        if self._valid_indices.size == 0:
+            raise RuntimeError(
+                f"FilteredLeRobotDataset is empty after applying weight_quantile="
+                f"{weight_quantile}, weight_cutoff={weight_cutoff} "
+                f"(threshold={self._threshold}). Loosen the filter."
+            )
+        logger.info(
+            "FilteredLeRobotDataset: kept %d / %d frames (%.1f%%), threshold=%.4g",
+            kept, total, 100 * kept / max(total, 1), self._threshold,
+        )
+
+    @staticmethod
+    def _episode_starts(dataset) -> dict[int, int]:
+        """Return ``{episode_index: first_global_frame_index}``."""
+        # LeRobotDataset exposes ``episode_data_index`` mapping episode -> [from, to).
+        edi = getattr(dataset, "episode_data_index", None)
+        if edi is None:
+            # Try via dataset.meta for older lerobot APIs.
+            edi = getattr(getattr(dataset, "meta", None), "episode_data_index", None)
+        if edi is None:
+            raise AttributeError(
+                "Underlying dataset has no episode_data_index; cannot map (ep, frame) "
+                "to global index. Is this a LeRobotDataset?"
+            )
+        # edi['from'] may be a torch tensor or numpy array.
+        from_arr = edi["from"]
+        try:
+            from_arr = from_arr.cpu().numpy()  # type: ignore[union-attr]
+        except AttributeError:
+            from_arr = np.asarray(from_arr)
+        return {int(i): int(v) for i, v in enumerate(from_arr)}
+
+    def __len__(self) -> int:
+        return int(self._valid_indices.size)
+
+    def __getitem__(self, index):
+        global_idx = int(self._valid_indices[int(index)])
+        return self._dataset[global_idx]
+
+    # Forward common attributes so downstream transforms still work.
+    def __getattr__(self, name):
+        return getattr(self._dataset, name)
+
+
+# ---------------------------------------------------------------------------
+# wrap_lerobot_dataset: single entry point used by data_loader.py
+# ---------------------------------------------------------------------------
+
+
+def wrap_lerobot_dataset(dataset, data_config, action_horizon: int, *, repo_id: str):
+    """Apply reward-weighted / filtered / prompt-overridden wrappers in order.
+
+    Returns the wrapped dataset.  When ``data_config.reward_name`` is ``None``
+    the dataset is returned unchanged, preserving full backward compatibility
+    with existing configs.
+    """
+    if data_config.reward_name is None:
+        return dataset
+
+    # Local import to avoid a circular import (data_loader -> rewards -> data_loader).
+    from openpi.training.data_loader import TransformedDataset
+
+    lookup = RewardLookup(
+        repo_id=repo_id,
+        reward_name=data_config.reward_name,
+        action_horizon=action_horizon,
+        lerobot_home=data_config.lerobot_home,
+        beta=getattr(data_config, "reward_beta", 2.0),
+        use_exp_weight=getattr(data_config, "use_exp_weight", True),
+        relu_negative_weights=getattr(data_config, "relu_negative_weights", True),
+    )
+
+    weight_quantile = getattr(data_config, "weight_quantile", None)
+    weight_cutoff = getattr(data_config, "weight_cutoff", None)
+    if weight_quantile is not None or weight_cutoff is not None:
+        dataset = FilteredLeRobotDataset(
+            dataset,
+            lookup,
+            weight_quantile=weight_quantile,
+            weight_cutoff=weight_cutoff,
+        )
+
+    transforms: list[_transforms.DataTransformFn] = [AddRewardWeight(lookup=lookup)]
+    if getattr(data_config, "override_prompt_from_reward", False):
+        if not lookup.reference_instruction:
+            raise ValueError(
+                f"override_prompt_from_reward=True but reward_name={data_config.reward_name!r} "
+                f"has no reference_instruction in config.json. Re-run annotate_rewards_joint.py "
+                f"with --reference-instruction."
+            )
+        transforms.append(OverrideTaskPrompt(prompt=lookup.reference_instruction))
+
+    return TransformedDataset(dataset, transforms)

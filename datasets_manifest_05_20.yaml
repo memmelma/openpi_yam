@@ -1,0 +1,20 @@
+# Example manifest for scripts/convert_raiden_to_lerobot_joint.py.
+#
+# Each entry under `datasets` describes one raiden processed directory and the
+# optimality label (optimal / suboptimal / failure) that ALL its episodes share.
+# Episodes from every listed dataset are concatenated into a single LeRobot
+# repo; the per-episode optimality + source is preserved in meta/optimality.jsonl.
+#
+# Fields:
+#   path        (required) Absolute path to a raiden `data/processed/<task>/` dir.
+#   optimality  (required) One of: optimal, suboptimal, failure.
+#   name        (optional) Display name used in the optimality sidecar. Defaults
+#                          to the directory basename.
+
+datasets:
+  - path: /home/reward/Projects/openpi_yam/data/processed/swb_failure
+    optimality: failure
+  - path: /home/reward/Projects/openpi_yam/data/processed/swb_suboptimal
+    optimality: suboptimal
+  - path: /home/reward/Projects/openpi_yam/data/processed/swb_optimal
+    optimality: optimal

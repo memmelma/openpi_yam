@@ -146,7 +146,7 @@ def create_torch_dataset(
     try:
         import torchcodec
         torchcodec_available = True
-    except RuntimeError:
+    except (RuntimeError, ImportError):
         torchcodec_available = False
 
     dataset = lerobot_dataset.LeRobotDataset(
@@ -164,13 +164,9 @@ def create_torch_dataset(
     if data_config.reward_name is not None:
         from openpi.training import rewards as _rewards
 
-        lookup = _rewards.RewardLookup(
-            repo_id=repo_id,
-            reward_name=data_config.reward_name,
-            action_horizon=action_horizon,
-            lerobot_home=data_config.lerobot_home,
+        dataset = _rewards.wrap_lerobot_dataset(
+            dataset, data_config, action_horizon, repo_id=repo_id
         )
-        dataset = TransformedDataset(dataset, [_rewards.AddRewardWeight(lookup=lookup)])
 
     return dataset
 

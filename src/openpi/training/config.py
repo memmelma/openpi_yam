@@ -102,6 +102,28 @@ class DataConfig:
     # ``HF_LEROBOT_HOME`` cannot be changed (it is read once at LeRobot import time).
     lerobot_home: str | None = None
 
+    # ----- AWR / weighted-BC reward shaping (see openpi.training.rewards) -----
+    # AWR temperature: weight = exp(advantage / reward_beta).  Lower beta = sharper.
+    reward_beta: float = 2.0
+    # If False, use the raw advantage as the per-sample weight (standard
+    # weighted BC).  Combined with ``relu_negative_weights`` this gives
+    # ``max(0, advantage)`` as the weight.
+    use_exp_weight: bool = True
+    # When ``use_exp_weight=False``, clip negative weights to zero so the loss
+    # stays non-negative.  Ignored when ``use_exp_weight=True``.
+    relu_negative_weights: bool = True
+    # If set, drop the bottom ``weight_quantile * 100`` percent of frames
+    # globally (across the whole repo) before training.  ``0.8`` keeps the top
+    # 20% of frames.  Combined with ``weight_cutoff`` via ``max(...)``.
+    weight_quantile: float | None = None
+    # Absolute weight cutoff: frames with weight below this value are dropped.
+    weight_cutoff: float | None = None
+    # If True, replace every sample's ``prompt`` with the
+    # ``reference_instruction`` recorded in the reward annotation's
+    # ``config.json``.  Useful when datasets were collected with different
+    # task strings but you want a single instruction during reward-weighted BC.
+    override_prompt_from_reward: bool = False
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -1071,7 +1093,7 @@ _CONFIGS = [
             repo_id="memmelma/star_wars_shelf_box_switch",
             base_config=DataConfig(
                 prompt_from_task=True,
-                reward_name="default_max_reward",
+                reward_name="default_advantage",
                 lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
             ),
         ),
@@ -1093,13 +1115,74 @@ _CONFIGS = [
         name="weighted_bc_local_star_wars",
         model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
         data=LeRobotYAMDataConfig(
-            repo_id="memmelma/star_wars_shelf_box_switch",
-            base_config=DataConfig(prompt_from_task=True, reward_name="default_max_reward"),
+            repo_id="local/raiden_star_wars_bookshelf",
+            base_config=DataConfig(prompt_from_task=True, reward_name="rvlm_advantage"),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
         num_train_steps=30_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # success only BC training - tillicum
+    TrainConfig(
+        name="bc_swb",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/swb_joint_05_20",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                weight_quantile=None,
+                weight_cutoff=0.5,
+                use_exp_weight=False,
+                reward_name="success_reward",
+                override_prompt_from_reward=True,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # success only AWR training - tillicum
+    TrainConfig(
+        name="awr_rvlm_delta_advantage_swb",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/swb_joint_05_20",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="move_the_star_wars_book_from_the_book_shelf_to_the_gray_box_rvlm_g099_delta_advantage",
+                reward_beta=2.0,
+                weight_quantile=0.7,
+                weight_cutoff=None,
+                use_exp_weight=True,
+                override_prompt_from_reward=True,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
         batch_size=32,
         num_workers=8,
         freeze_filter=pi0_config.Pi0Config(

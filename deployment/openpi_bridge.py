@@ -39,12 +39,16 @@ from raiden.inference import ModelBridge
 MODEL_IMG_SIZE = 224
 
 # Camera name mapping: raiden camera name → OpenPI observation key.
+# _CAM_MAP: dict[str, str] = {
+#     "head": "observation/image_head",
+#     "left_wrist": "observation/image_left_wrist",
+#     "right_wrist": "observation/image_right_wrist",
+# }
 _CAM_MAP: dict[str, str] = {
-    "head": "observation/image_head",
-    "left_wrist": "observation/image_left_wrist",
-    "right_wrist": "observation/image_right_wrist",
+    "scene_camera": "observation/image_head",
+    "left_wrist_camera": "observation/image_left_wrist",
+    "right_wrist_camera": "observation/image_right_wrist",
 }
-
 
 def _raiden_to_openpi_state(
     r_joint_pos: np.ndarray,
@@ -83,9 +87,11 @@ class OpenPiBridge(ModelBridge):
     raiden observations and OpenPI's expected input format.
     """
 
-    def __init__(self, action_horizon: int = 10):
+    def __init__(self, action_horizon: int = 10, action_hz: float = 30.0, downsample: bool = False):
         self._broker = None
         self._action_horizon = action_horizon
+        self._action_hz = action_hz
+        self._downsample = downsample
         self._prompt: str = ""
         self._step = 0
         self._n_infer = 0
@@ -103,7 +109,7 @@ class OpenPiBridge(ModelBridge):
             action_horizon: Number of actions to execute per inference call.
             prompt: Language instruction for the task.
         """
-        from openpi_client import action_chunk_broker
+        from openpi_client import StandardBroker
         from openpi_client import websocket_client_policy as _ws
 
         host = kwargs.get("host", "localhost")
@@ -117,10 +123,7 @@ class OpenPiBridge(ModelBridge):
         metadata = ws_policy.get_server_metadata()
         print(f"[openpi_bridge] Server metadata: {metadata}")
 
-        self._broker = action_chunk_broker.ActionChunkBroker(
-            policy=ws_policy,
-            action_horizon=action_horizon,
-        )
+        self._broker = StandardBroker(policy=ws_policy, action_horizon=action_horizon)
         print(f"[openpi_bridge] Ready (action_horizon={action_horizon})")
 
     def reset(self) -> None:
@@ -161,14 +164,29 @@ class OpenPiBridge(ModelBridge):
         """Convert raiden Observation to OpenPI observation dict."""
         obs_dict: dict = {}
 
-        # Images: BGR uint8 → RGB uint8, resize to 224x224
+        # Images: BGR uint8 → RGB uint8, optional 2× downsample, then resize_with_pad to 224×224.
+        # With downsample=True (default): matches the training pipeline where LeRobot data is
+        # stored at 640×360 and ResizeImages(224, 224) applies resize_with_pad.
+        # With downsample=False: apply resize_with_pad directly to full-resolution input.
         for cam in obs.cameras:
             obs_key = _CAM_MAP.get(cam.name)
             if obs_key is None:
                 continue
             rgb = cv2.cvtColor(cam.image, cv2.COLOR_BGR2RGB)
-            rgb = cv2.resize(rgb, (MODEL_IMG_SIZE, MODEL_IMG_SIZE))
-            obs_dict[obs_key] = rgb  # uint8 [224, 224, 3]
+            if self._downsample:
+                # Step 1: 2× area-average downsample (matches stored dataset resolution of 640×360)
+                h, w = rgb.shape[:2]
+                rgb = cv2.resize(rgb, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
+            # Step 2: resize_with_pad to MODEL_IMG_SIZE×MODEL_IMG_SIZE (matches ResizeImages transform)
+            ratio = max(rgb.shape[0] / MODEL_IMG_SIZE, rgb.shape[1] / MODEL_IMG_SIZE)
+            new_h = int(rgb.shape[0] / ratio)
+            new_w = int(rgb.shape[1] / ratio)
+            rgb = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            pad = np.zeros((MODEL_IMG_SIZE, MODEL_IMG_SIZE, 3), dtype=np.uint8)
+            pad_h = (MODEL_IMG_SIZE - new_h) // 2
+            pad_w = (MODEL_IMG_SIZE - new_w) // 2
+            pad[pad_h:pad_h + new_h, pad_w:pad_w + new_w] = rgb
+            obs_dict[obs_key] = pad  # uint8 [224, 224, 3]
 
         # State: assemble 14D from raiden proprios
         r_pos = obs.proprios.get(
@@ -201,7 +219,7 @@ def main():
     parser.add_argument("--host", default="localhost", help="OpenPI server host")
     parser.add_argument("--port", type=int, default=8000, help="OpenPI server port")
     parser.add_argument("--action_horizon", type=int, default=10, help="Actions per inference")
-    parser.add_argument("--action_hz", type=float, default=50.0)
+    parser.add_argument("--action_hz", type=float, default=30.0)
     parser.add_argument("--prompt", default="", help="Language instruction")
     parser.add_argument("--camera_config_file", default="./config/camera_config.json")
     parser.add_argument("--calibration_file", default="./config/calibration_results.json")
