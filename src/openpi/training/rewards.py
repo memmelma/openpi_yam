@@ -310,7 +310,13 @@ class FilteredLeRobotDataset(torch.utils.data.Dataset):
 
     # Forward common attributes so downstream transforms still work.
     def __getattr__(self, name):
-        return getattr(self._dataset, name)
+        # Use object.__getattribute__ to avoid recursive __getattr__ calls
+        # if _dataset itself isn't set yet.
+        try:
+            dataset = object.__getattribute__(self, "_dataset")
+        except AttributeError:
+            raise AttributeError(name)
+        return getattr(dataset, name)
 
 
 # ---------------------------------------------------------------------------

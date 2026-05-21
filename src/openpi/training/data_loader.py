@@ -62,6 +62,13 @@ class TransformedDataset(Dataset[T_co]):
     def __len__(self) -> int:
         return len(self._dataset)
 
+    def __getattr__(self, name: str):
+        try:
+            dataset = object.__getattribute__(self, "_dataset")
+        except AttributeError:
+            raise AttributeError(name)
+        return getattr(dataset, name)
+
 
 class IterableTransformedDataset(IterableDataset[T_co]):
     def __init__(
