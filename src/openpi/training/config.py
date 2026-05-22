@@ -1045,6 +1045,37 @@ _CONFIGS = [
         ema_decay=None,
     ),
 
+    # AWR chunk-weighted BC - red_book_05_21 - beta = 5.0
+    TrainConfig(
+        name="awr_chunk_red_book_beta_5",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/red_book_05_21",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="move_the_red_book_from_the_book_shelf_to_the_gray_box_rvlm_reward",
+                reward_beta=5.0,
+                weight_scheme="awr_chunk",
+                weight_quantile=None,
+                weight_cutoff=None,
+                override_prompt_from_reward=True,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
     # CFGRL advantage-conditioned BC - red_book_05_21
     TrainConfig(
         name="cfgrl_red_book",
@@ -1057,6 +1088,39 @@ _CONFIGS = [
                 override_prompt_from_reward=True,
                 cfgrl_enabled=True,
                 cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL advantage-conditioned BC - red_book_05_21 - positive_quantile = 0.40
+    TrainConfig(
+        name="cfgrl_red_book_positive_quantile_040",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/red_book_05_21",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="move_the_red_book_from_the_book_shelf_to_the_gray_box_rvlm_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.40,
                 cfgrl_dropout_prob=0.30,
                 cfgrl_force_positive=False,
                 weight_quantile=None,
@@ -1139,6 +1203,37 @@ _CONFIGS = [
         ema_decay=None,
     ),
 
+    # AWR chunk-weighted BC - pick_and_choose_05_21 - beta = 5.0
+    TrainConfig(
+        name="awr_chunk_pick_and_choose_beta_5",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/pick_and_choose_05_21",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="put_the_daniel_kahnemann_book_on_the_bookshelf_rvlm_reward",
+                reward_beta=5.0,
+                weight_scheme="awr_chunk",
+                weight_quantile=None,
+                weight_cutoff=None,
+                override_prompt_from_reward=True,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
     # CFGRL advantage-conditioned BC - pick_and_choose_05_21
     TrainConfig(
         name="cfgrl_pick_and_choose",
@@ -1151,6 +1246,39 @@ _CONFIGS = [
                 override_prompt_from_reward=True,
                 cfgrl_enabled=True,
                 cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL advantage-conditioned BC - pick_and_choose_05_21 - positive_quantile = 0.40
+    TrainConfig(
+        name="cfgrl_pick_and_choose_positive_quantile_040",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/pick_and_choose_05_21",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="put_the_daniel_kahnemann_book_on_the_bookshelf_rvlm_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.40,
                 cfgrl_dropout_prob=0.30,
                 cfgrl_force_positive=False,
                 weight_quantile=None,
