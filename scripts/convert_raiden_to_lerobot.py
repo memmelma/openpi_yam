@@ -52,6 +52,7 @@ _OUT_TO_SRC = {v: k for k, v in CAMERA_NAME_MAP.items()}
 
 FPS = 30
 JPEG_QUALITY = 95
+DOWNSAMPLE_FACTOR = 2  # store at 640x360 for reward annotation; halves storage while keeping enough detail for VLMs
 
 # 14D: [left_joint(6), left_grip(1), right_joint(6), right_grip(1)].
 # Matches the bimanual MOTORS list so the existing pi05_yam_* configs and
@@ -162,7 +163,7 @@ def _infer_rgb_hw(image_paths: dict[str, list[Path]]) -> tuple[int, int]:
         img = cv2.imread(str(paths[0]))
         if img is not None:
             return int(img.shape[0]), int(img.shape[1])
-    return 720, 1280
+    return 720 // DOWNSAMPLE_FACTOR, 1280 // DOWNSAMPLE_FACTOR
 
 
 def _png_to_jpg(src_dir: Path, dst_dir: Path, num_frames: int) -> None:
@@ -274,6 +275,10 @@ def _process_episode(
             if img_bgr is None:
                 raise FileNotFoundError(f"Could not read {paths[i]}")
             img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            if DOWNSAMPLE_FACTOR > 1:
+                h, w = img.shape[:2]
+                img = cv2.resize(img, (w // DOWNSAMPLE_FACTOR, h // DOWNSAMPLE_FACTOR),
+                                 interpolation=cv2.INTER_AREA)
             frame_dict[f"observation.images.{out_cam}"] = img
 
         dataset.add_frame(frame_dict)
@@ -315,7 +320,7 @@ def main(args: Args):
     for cam in CAMERAS:
         features[f"observation.images.{cam}"] = {
             "dtype": "video",
-            "shape": (3, 720, 1280),
+            "shape": (3, 720 // DOWNSAMPLE_FACTOR, 1280 // DOWNSAMPLE_FACTOR),
             "names": ["channels", "height", "width"],
         }
 

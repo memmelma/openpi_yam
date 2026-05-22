@@ -54,7 +54,10 @@ from typing import Literal
 import numpy as np
 import tqdm
 import tyro
-from lerobot.common.constants import HF_LEROBOT_HOME
+try:
+    from lerobot.common.constants import HF_LEROBOT_HOME  # lerobot <0.4
+except ModuleNotFoundError:
+    from lerobot.utils.constants import HF_LEROBOT_HOME  # lerobot >=0.4
 
 # ---------------------------------------------------------------------------
 # Optional imports
@@ -174,7 +177,8 @@ def compute_and_interpolate(
         for t_i in query_indices:
             prefix_8, _ = linspace_subsample_frames(frames[: t_i + 1], _N_FRAMES_PER_CALL)
             result = model.compute_progress(prefix_8, task_description=task)
-            per_query.append(float(result[-1]))
+            last = result[-1]
+            per_query.append(float(np.sum(last) if hasattr(last, "__len__") else last))
         progress = np.array(per_query, dtype=np.float32)
         indices = query_indices
 

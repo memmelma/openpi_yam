@@ -169,3 +169,4 @@ cython_debug/
 
 unsloth_compiled_cache/
 assets/
+logs_slurm/*
