@@ -1330,6 +1330,100 @@ _CONFIGS = [
         ema_decay=None,
     ),
 
+    # AWR chunk-weighted BC - pick_and_choose_05_22
+    TrainConfig(
+        name="awr_chunk_pick_and_choose_05_22",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/pick_and_choose_05_22",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="put_the_book_'thinking_fast_and_slow'_by_daniel_kahnemann_on_top_of_the_wodden_bookshelf_on_the_left_rvlm_reward",
+                reward_beta=2.0,
+                weight_scheme="awr_chunk",
+                weight_quantile=None,
+                weight_cutoff=None,
+                override_prompt_from_reward=True,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL advantage-conditioned BC - pick_and_choose_05_22
+    TrainConfig(
+        name="cfgrl_pick_and_choose_05_22",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/pick_and_choose_05_22",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="put_the_book_'thinking_fast_and_slow'_by_daniel_kahnemann_on_top_of_the_wodden_bookshelf_on_the_left_rvlm_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # plain BC - pick_and_choose_05_22_bc (success-filtered)
+    TrainConfig(
+        name="bc_pick_and_choose_05_22",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/pick_and_choose_05_22_bc",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="success_reward",
+                weight_quantile=None,
+                weight_cutoff=0.5,
+                weight_scheme="default",
+                override_prompt_from_reward=True,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
