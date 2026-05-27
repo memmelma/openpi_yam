@@ -2287,6 +2287,393 @@ _CONFIGS = [
         ema_decay=None,
     ),
 
+    # plain BC - candy_05_26 (success-filtered)
+    TrainConfig(
+        name="bc_candy_05_26",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/candy_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="success_reward",
+                weight_quantile=None,
+                weight_cutoff=0.5,
+                weight_scheme="default",
+                override_prompt_from_reward=True,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL - candy_05_26 - topreward - top 30%
+    TrainConfig(
+        name="cfgrl_candy_05_26_topreward",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/candy_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="pour_the_snickers_in_the_candy_bowl_without_spilling_topreward_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL - candy_05_26 - robometer - top 30%
+    TrainConfig(
+        name="cfgrl_candy_05_26_robometer",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/candy_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="pour_the_snickers_in_the_candy_bowl_without_spilling_rbm_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL - candy_05_26 - rvlm - top 30%
+    TrainConfig(
+        name="cfgrl_candy_05_26_rvlm",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/candy_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="pour_the_snickers_in_the_candy_bowl_without_spilling_rvlm_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # plain BC - white_book_05_26 (success-filtered)
+    TrainConfig(
+        name="bc_white_book_05_26",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/white_book_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="success_reward",
+                weight_quantile=None,
+                weight_cutoff=0.5,
+                weight_scheme="default",
+                override_prompt_from_reward=True,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL - white_book_05_26 - topreward - top 30%
+    TrainConfig(
+        name="cfgrl_white_book_05_26_topreward",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/white_book_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="put_the_white_book_on_top_of_the_left_bookshelf_topreward_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL - white_book_05_26 - robometer - top 30%
+    TrainConfig(
+        name="cfgrl_white_book_05_26_robometer",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/white_book_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="put_the_white_book_on_top_of_the_left_bookshelf_rbm_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL - white_book_05_26 - rvlm - top 30%
+    TrainConfig(
+        name="cfgrl_white_book_05_26_rvlm",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/white_book_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="put_the_white_book_on_top_of_the_left_bookshelf_rvlm_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # plain BC - ethernet_05_26 (success-filtered)
+    TrainConfig(
+        name="bc_ethernet_05_26",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/ethernet_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="success_reward",
+                weight_quantile=None,
+                weight_cutoff=0.5,
+                weight_scheme="default",
+                override_prompt_from_reward=True,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL - ethernet_05_26 - topreward - top 30%
+    TrainConfig(
+        name="cfgrl_ethernet_05_26_topreward",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/ethernet_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="place_the_computer_in_the_shelf_and_unplug_the_ethernet_cable_topreward_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL - ethernet_05_26 - robometer - top 30%
+    TrainConfig(
+        name="cfgrl_ethernet_05_26_robometer",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/ethernet_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="place_the_computer_in_the_shelf_and_unplug_the_ethernet_cable_rbm_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # CFGRL - ethernet_05_26 - rvlm - top 30%
+    TrainConfig(
+        name="cfgrl_ethernet_05_26_rvlm",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/ethernet_05_26",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="place_the_computer_in_the_shelf_and_unplug_the_ethernet_cable_rvlm_reward",
+                override_prompt_from_reward=True,
+                cfgrl_enabled=True,
+                cfgrl_positive_quantile=0.30,
+                cfgrl_dropout_prob=0.30,
+                cfgrl_force_positive=False,
+                weight_quantile=None,
+                weight_cutoff=None,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
