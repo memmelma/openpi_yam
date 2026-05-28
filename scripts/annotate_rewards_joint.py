@@ -34,7 +34,10 @@ Usage:
     uv run scripts/annotate_rewards_joint.py \\
         --repo-id memmelma/swb_joint \\
         --reward-model rvlm \\
-        --reference-instruction "move the star wars book ..."
+        --reference-instruction "move the star wars book ..." \\
+        --camera all \\
+        --rvlm-modality video_grounded_hierarchy_single \\
+        --video-logging
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as _dt
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Literal
@@ -49,7 +53,10 @@ from typing import Literal
 import numpy as np
 import tqdm
 import tyro
-from lerobot.common.constants import HF_LEROBOT_HOME
+try:
+    from lerobot.common.constants import HF_LEROBOT_HOME
+except ModuleNotFoundError:
+    from lerobot.utils.constants import HF_LEROBOT_HOME
 
 # Ensure sibling scripts are importable when invoked from any cwd.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -65,6 +72,7 @@ from annotate_rewards import (  # noqa: E402
     create_model,
     normalize_instruction_for_key,
     parse_model_config,
+    resolve_target_episodes,
 )
 
 SUPPORTED = ("rvlm", "topreward", "rbm", "rbm_libero", "success", "stub")
@@ -88,6 +96,8 @@ def _write_success_rewards(
     dataset_root: Path,
     prefix: str,
     overwrite: bool,
+    episodes: tuple[int, ...] | None = None,
+    skip: int = 0,
 ) -> int:
     """Write per-episode reward arrays where failure→0, else→1 (constant per ep)."""
     meta_dir = dataset_root / "meta"
@@ -99,12 +109,14 @@ def _write_success_rewards(
     optimality_lookup = {r["episode_index"]: r["optimality"] for r in _load_jsonl(opt_path)}
 
     episodes_meta = _load_jsonl(meta_dir / "episodes.jsonl")
+    target_episodes = resolve_target_episodes(episodes_meta, episodes, skip)
+    ep_lookup = {int(e["episode_index"]): e for e in episodes_meta}
     reward_dir = meta_dir / "rewards" / f"{prefix}_reward"
     reward_dir.mkdir(parents=True, exist_ok=True)
 
     written = 0
-    for ep in tqdm.tqdm(episodes_meta, desc="Success rewards"):
-        ep_idx = int(ep["episode_index"])
+    for ep_idx in tqdm.tqdm(target_episodes, desc="Success rewards"):
+        ep = ep_lookup[ep_idx]
         out_path = reward_dir / f"episode_{ep_idx:06d}.npy"
         if out_path.exists() and not overwrite:
             continue
@@ -182,19 +194,36 @@ class Args:
     model_path: str | None = None
     """HF / local checkpoint for rbm / rbm_libero."""
     model_config: tuple[str, ...] = ()
-    """Extra key=value kwargs forwarded to the model constructor."""
+    """Extra RVLM / model constructor kwargs as key=value pairs.  Overrides the
+    dedicated --rvlm-* flags when the same key appears in both."""
+
+    rvlm_model_name: str = "gemini-3-flash-preview"
+    """Gemini model id passed to RVLM (``--reward-model rvlm`` only)."""
+    rvlm_thinking_level: str = "MEDIUM"
+    """RVLM thinking level: LOW, MEDIUM, or HIGH."""
+    rvlm_modality: str = "video_grounded_hierarchy_single"
+    """RVLM pipeline modality string, e.g. ``video_grounded_hierarchy_single``,
+    ``video_hierarchy_single``, ``all_frames_hierarchy_single``."""
+
     max_frames: int = 16
     """Max frames forwarded to model constructors that accept it."""
 
     camera: str = "head"
-    """Camera name (under observation.images.<camera>) whose video is decoded."""
+    """Camera name (under observation.images.<camera>), or ``all`` to stack
+    left_wrist / head / right_wrist vertically."""
     episodes: tuple[int, ...] | None = None
     """Optional subset of episode indices to annotate."""
+    skip: int = 0
+    """Skip the first N episodes (after applying ``--episodes`` if set)."""
 
-    subsample_frames: int = 8
-    """Min frames for rvlm subsampling; set 0 to disable the min."""
-    subsample_factor: int = 0
-    """If > 0, rvlm subsample_n = traj_len // factor (clamped to >= 8)."""
+    subsample_frames: int | None = None
+    """Fixed number of frames to subsample per episode before reward inference.
+    When both subsample_frames and subsample_factor are None (the default), every
+    frame in the trajectory is queried (no subsampling).  Rewards are interpolated
+    back to full length when a subset is queried."""
+    subsample_factor: int | None = None
+    """Downsample factor N: subsample_n = len(traj) // N.  When set, overrides
+    subsample_frames; subsample_frames acts as a minimum floor when both are set."""
 
     overwrite: bool = False
     """Re-run reward inference even if reward sidecars exist.  Returns /
@@ -213,13 +242,38 @@ class Args:
     concurrency: int = 16
     """Async concurrency for RVLM."""
 
+    video_logging: bool = False
+    """Enable RVLM debug artifact logging (mp4 + text sidecars under rvlm tmp dir)."""
+
     lerobot_home: str | None = None
     """Optional override for dataset root (defaults to $HF_LEROBOT_HOME)."""
+
+    batched: bool = False
+    """[topreward only] Use TOPRewardBatched: batch all per-timestep prefix queries
+    for an episode into a single GPU forward pass (Qwen backend only)."""
+    batched_chunk_size: int = 4
+    """[topreward + --batched] Sub-batch size when batching prefixes (memory cap)."""
 
     push_to_hub: bool = False
     """Upload all <prefix>_* directories to the Hub after writing."""
     private: bool = True
     """If pushing, mark hub repo as private."""
+
+
+def _build_model_config(args: Args) -> dict:
+    """Merge dedicated RVLM flags with ``--model-config`` (latter wins on conflict)."""
+    cfg = parse_model_config(args.model_config)
+    if args.reward_model != "rvlm":
+        return cfg
+    cfg = {
+        "model_name": args.rvlm_model_name,
+        "thinking_level": args.rvlm_thinking_level,
+        "modality": args.rvlm_modality,
+        **cfg,
+    }
+    if args.video_logging:
+        cfg["video_logging"] = True
+    return cfg
 
 
 def _resolve_prefix(args: Args) -> str:
@@ -256,7 +310,31 @@ def main(args: Args) -> None:
     print(f"Instruction  : {reference_instruction!r}")
     print(f"Prefix       : {prefix}")
     print(f"Gamma        : {args.gamma}    Beta: {args.beta}")
+    if args.reward_model == "rvlm":
+        print(f"RVLM modality: {args.rvlm_modality}")
+        print(f"RVLM model     : {args.rvlm_model_name}  thinking: {args.rvlm_thinking_level}")
+        if args.video_logging:
+            print("RVLM video_logging: enabled")
+    if args.skip > 0:
+        print(f"Skip         : first {args.skip} episode(s)")
     print(f"{'=' * 60}")
+
+    if args.batched:
+        if args.reward_model != "topreward":
+            raise SystemExit(
+                f"--batched is only supported for --reward-model topreward "
+                f"(got {args.reward_model!r})."
+            )
+        # Check only explicit --model-config model_name=... overrides; the
+        # rvlm_model_name default ("gemini-3-flash-preview") is irrelevant here.
+        explicit_model_name = next(
+            (v for kv in args.model_config for k, v in [kv.split("=", 1)] if k == "model_name"),
+            None,
+        ) if args.model_config else None
+        if explicit_model_name and "gemini" in explicit_model_name.lower():
+            raise SystemExit(
+                "--batched is not supported for Gemini model names (Qwen only)."
+            )
 
     reward_dir = root / "meta" / "rewards" / f"{prefix}_reward"
     rewards_exist = reward_dir.exists() and any(reward_dir.glob("episode_*.npy"))
@@ -265,7 +343,10 @@ def main(args: Args) -> None:
     if rewards_exist and not args.overwrite:
         print(f"\nRewards exist at {reward_dir.name}/ (use --overwrite to force).")
     elif args.reward_model == "success":
-        n = _write_success_rewards(root, prefix, overwrite=args.overwrite)
+        n = _write_success_rewards(
+            root, prefix, overwrite=args.overwrite,
+            episodes=args.episodes, skip=args.skip,
+        )
         print(f"  wrote {n} success reward file(s)")
     else:
         # Patch annotate_rewards._N_FRAMES_PER_CALL behaviour for topreward/rbm:
@@ -281,12 +362,51 @@ def main(args: Args) -> None:
             if reward_model in ("rbm", "rewind", "rbm_libero", "topreward"):
                 total = len(frames)
                 _, query_indices = _ar.linspace_subsample_frames(frames, subsample_n)
+
+                # Batched fast-path: build all 8-frame prefix contexts up front,
+                # then dispatch to compute_progress_batched in one (sub-chunked) call.
+                if reward_model == "topreward" and hasattr(model, "compute_progress_batched"):
+                    prefix_ctx_list = []
+                    for t_i in query_indices:
+                        avail = frames[: int(t_i) + 1]
+                        if len(avail) <= 8:
+                            prefix_ctx = avail  # pass 1, 2, ... up to 8 frames as-is
+                        else:
+                            prefix_ctx, _ = _ar.linspace_subsample_frames(avail, 8)
+                        prefix_ctx_list.append(prefix_ctx)
+                    per_query = model.compute_progress_batched(prefix_ctx_list, task_description=task)
+                    print(per_query)
+                    progress = np.array(per_query, dtype=np.float32)
+                    if len(query_indices) < total:
+                        progress = np.interp(np.arange(total), query_indices, progress).astype(np.float32)
+                    return progress
+
                 per_query = []
                 for t_i in query_indices:
+                    avail = frames[: int(t_i) + 1]
+                    if reward_model == "topreward":
+                        if len(avail) <= 8:
+                            prefix_ctx = avail  # pass 1, 2, ... up to 8 frames as-is
+                        else:
+                            prefix_ctx, _ = _ar.linspace_subsample_frames(avail, 8)
+                        result = model.compute_progress(prefix_ctx, task_description=task)
+                        if type(result[0]) == list:
+                            result = result[-1]
+                        per_query.append(float(result[-1]))
+                        print(result)
+                        continue
                     n_ctx = max(1, min(8, int(t_i) + 1))
-                    prefix_ctx, _ = _ar.linspace_subsample_frames(frames[: int(t_i) + 1], n_ctx)
+                    if reward_model in ("rbm", "rewind", "rbm_libero") and len(avail) < 2:
+                        # RBM produces unreliable (negative) logits for single-frame inputs;
+                        # pad by repeating the first frame so the model always sees >= 2 frames.
+                        avail = np.concatenate([avail, avail], axis=0)
+                        n_ctx = max(n_ctx, 2)
+                    prefix_ctx, _ = _ar.linspace_subsample_frames(avail, n_ctx)
                     result = model.compute_progress(prefix_ctx, task_description=task)
+                    if type(result[0]) == list:
+                        result = result[-1]
                     per_query.append(float(result[-1]))
+                    print(result)
                 progress = np.array(per_query, dtype=np.float32)
                 if len(query_indices) < total:
                     progress = np.interp(np.arange(total), query_indices, progress).astype(np.float32)
@@ -304,15 +424,22 @@ def main(args: Args) -> None:
 
         _ar._resolve_subsample_n = _patched_resolve
 
-        model_cfg = parse_model_config(args.model_config)
+        model_cfg = _build_model_config(args)
         model = None
         if not args.stub:
-            model = create_model(
-                args.reward_model,
-                model_path=args.model_path,
-                max_frames=args.max_frames,
-                **model_cfg,
-            )
+            if args.reward_model == "topreward" and args.batched:
+                from robometer.evals.baselines.topreward_official_batched import TOPRewardBatched
+                model = TOPRewardBatched(
+                    batch_size=args.batched_chunk_size,
+                    **model_cfg,
+                )
+            else:
+                model = create_model(
+                    args.reward_model,
+                    model_path=args.model_path,
+                    max_frames=args.max_frames,
+                    **model_cfg,
+                )
 
         annotate_fn = (
             _annotate_repo_async
@@ -324,6 +451,20 @@ def main(args: Args) -> None:
         else:
             written = _annotate_repo_sync(root, model, args, prefix, reference_instruction)
         print(f"  wrote {len(written)} reward file(s)")
+
+    # ---------------- Phase 1b: normalize topreward across all episodes ----------------
+    if args.reward_model == "topreward":
+        reward_files = sorted(reward_dir.glob("episode_*.npy"))
+        if reward_files:
+            print("\nNormalizing topreward rewards by global min/max...")
+            all_rewards = [np.load(f).astype(np.float32) for f in reward_files]
+            all_vals = np.concatenate(all_rewards)
+            r_min, r_max = float(all_vals.min()), float(all_vals.max())
+            print(f"  global min={r_min:.4f}  max={r_max:.4f}")
+            denom = r_max - r_min if r_max > r_min else 1.0
+            for f, r in zip(reward_files, all_rewards):
+                np.save(f, ((r - r_min) / denom).astype(np.float32))
+            print(f"  normalized {len(reward_files)} episode reward file(s)")
 
     # ---------------- Phase 2: derived signals (ALWAYS recomputed) ----------------
     # Gamma is encoded in all derived directory names so that different gamma
@@ -367,10 +508,14 @@ def main(args: Args) -> None:
         "beta": args.beta,
         "subsample_frames": args.subsample_frames,
         "subsample_factor": args.subsample_factor,
+        "skip": args.skip,
+        "video_logging": args.video_logging,
         "joint_dataset": True,
         "stub": args.stub,
         "created": _dt.datetime.utcnow().isoformat() + "Z",
     }
+    if args.reward_model == "rvlm":
+        config_payload["rvlm"] = _build_model_config(args)
     (reward_dir / "config.json").write_text(json.dumps(config_payload, indent=2))
     print(f"\nWrote config to {reward_dir / 'config.json'}")
 
