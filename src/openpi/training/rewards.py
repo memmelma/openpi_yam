@@ -14,10 +14,12 @@ This module reads them at training time and exposes:
   (read from ``<reward_name>/config.json``);
 - an optional :class:`AddAdvantageIndicator` transform that implements CFGRL
   (π*0.6 / Recap) policy extraction: appends ``"Advantage: positive/negative"``
-  to the prompt based on a binarised chunk advantage, with CFG-style dropout.
-  Requires ``reward_name`` to point at a *value function* directory (containing
-  ``episode_*.npy`` files with V(s_t) estimates); enabled via
-  ``data_config.cfgrl_enabled``.
+  to the prompt based on a binarised advantage, with CFG-style dropout.
+  Two advantage sources are supported via ``weight_scheme``:
+    - ``"chunk"``     – on-the-fly ``V(s_{t+H})-V(s_t)`` from a reward sidecar.
+    - ``"adv_chunk"`` – per-frame offline advantage loaded from a precomputed
+                        sidecar derived from ``reward_name`` + gamma/delta knobs.
+  Enabled via ``data_config.cfgrl_enabled``.
 """
 
 from __future__ import annotations
@@ -30,13 +32,14 @@ from pathlib import Path
 
 import numpy as np
 import torch.utils.data
+from huggingface_hub import snapshot_download
 from lerobot.common.constants import HF_LEROBOT_HOME
 
 import openpi.transforms as _transforms
 
 logger = logging.getLogger(__name__)
 
-_VALID_SCHEMES = {"default", "awr", "chunk", "awr_chunk"}
+_VALID_SCHEMES = {"default", "awr", "chunk", "awr_chunk", "adv_chunk"}
 
 # ---------------------------------------------------------------------------
 # RewardLookup: per-episode reward / advantage loader with weight transform
@@ -49,13 +52,18 @@ class RewardLookup:
     Reads ``meta/rewards/<reward_name>/episode_*.npy`` and returns a scalar
     per-sample weight according to ``weight_scheme``:
 
-    - ``"default"``   – stored value used directly as weight (no transform).
-    - ``"awr"``       – AWR: ``exp(value / beta)``.  ``reward_name`` should
-                        point at an advantage directory (e.g. ``..._delta_advantage``).
-    - ``"chunk"``     – on-the-fly advantage ``V(s_{t+N}) - V(s_t)`` where
-                        N = action_horizon.  ``reward_name`` must point at a
-                        *value* directory.
-    - ``"awr_chunk"`` – chunk advantage then ``exp(adv / beta)``.
+    - ``"default"``    – stored value used directly as weight (no transform).
+    - ``"awr"``        – AWR: ``exp(value / beta)``.  ``reward_name`` should
+                         point at an advantage directory (e.g. ``..._delta_advantage``).
+    - ``"chunk"``      – on-the-fly advantage ``V(s_{t+N}) - V(s_t)`` where
+                         N = action_horizon.  ``reward_name`` must point at a
+                         *value* directory.
+    - ``"awr_chunk"``  – chunk advantage then ``exp(adv / beta)``.
+    - ``"adv_chunk"``  – per-frame offline advantage loaded from the precomputed
+                         sidecar derived from ``reward_name`` (must end in
+                         ``_reward``).  The advantage directory is resolved as
+                         ``<prefix>_g<gamma_tag>{_delta}_advantage`` using
+                         ``advantage_gamma`` and ``advantage_delta``.
     """
 
     def __init__(
@@ -65,9 +73,12 @@ class RewardLookup:
         action_horizon: int,
         *,
         lerobot_home: str | Path | None = None,
+        revision: str | None = None,
         beta: float = 2.0,
         weight_scheme: str = "awr",
         weight_clip: float = 100.0,
+        advantage_gamma: float = 0.99,
+        advantage_delta: bool = True,
     ) -> None:
         if weight_scheme not in _VALID_SCHEMES:
             raise ValueError(f"weight_scheme must be one of {_VALID_SCHEMES}, got {weight_scheme!r}")
@@ -78,13 +89,56 @@ class RewardLookup:
                 f"(got {reward_name!r}). AWR-style advantage directories are not compatible "
                 f"with on-the-fly chunk-advantage computation."
             )
-        base = Path(lerobot_home) if lerobot_home is not None else Path(HF_LEROBOT_HOME)
-        self._dir = base / repo_id / "meta" / "rewards" / reward_name
-        if not self._dir.exists():
-            raise FileNotFoundError(
-                f"Reward directory {self._dir} not found. "
-                f"Run scripts/annotate_rewards_joint.py first."
+
+        # For adv_chunk, derive the advantage directory from the reward name.
+        effective_reward_name = reward_name
+        if weight_scheme == "adv_chunk":
+            if not reward_name.endswith("_reward"):
+                raise ValueError(
+                    f"weight_scheme='adv_chunk' requires reward_name to end with '_reward' so the "
+                    f"advantage sidecar directory can be derived automatically "
+                    f"(got {reward_name!r}). Set reward_name=<prefix>_reward and the advantage "
+                    f"path will be resolved as <prefix>_g<gamma_tag>{{_delta}}_advantage."
+                )
+            gtag = "g" + f"{advantage_gamma:.2f}".replace(".", "")
+            adv_suffix = "_delta_advantage" if advantage_delta else "_advantage"
+            prefix = reward_name[: -len("_reward")]
+            effective_reward_name = f"{prefix}_{gtag}{adv_suffix}"
+            logger.info(
+                "adv_chunk: derived advantage sidecar '%s' from reward_name '%s' "
+                "(gamma=%.2f, delta=%s)",
+                effective_reward_name, reward_name, advantage_gamma, advantage_delta,
             )
+
+        base = Path(lerobot_home) if lerobot_home is not None else Path(HF_LEROBOT_HOME)
+        self._dir = base / repo_id / "meta" / "rewards" / effective_reward_name
+        if not self._dir.exists():
+            logger.info(
+                "Reward directory %s not found locally. "
+                "Attempting to download meta/rewards/%s from Hub repo %s ...",
+                self._dir,
+                effective_reward_name,
+                repo_id,
+            )
+            try:
+                snapshot_download(
+                    repo_id=repo_id,
+                    repo_type="dataset",
+                    allow_patterns=[f"meta/rewards/{effective_reward_name}/**"],
+                    local_dir=str(base / repo_id),
+                    revision=revision,
+                )
+            except Exception as e:
+                raise FileNotFoundError(
+                    f"Reward directory {self._dir} not found locally and could not be "
+                    f"downloaded from the Hub ({e}). "
+                    f"Run scripts/annotate_rewards_joint.py first."
+                ) from e
+            if not self._dir.exists():
+                raise FileNotFoundError(
+                    f"Reward directory {self._dir} not found after Hub download. "
+                    f"Run scripts/annotate_rewards_joint.py first."
+                )
         self._action_horizon = int(action_horizon)
         self._beta = float(beta)
         self._scheme = weight_scheme
@@ -179,6 +233,22 @@ class RewardLookup:
         t_next = min(t + self._action_horizon, arr.shape[0] - 1)
         return np.float32(arr[t_next] - arr[t])
 
+    def _frame_advantage(self, episode_index: int, frame_index: int) -> np.float32:
+        """Return the precomputed per-frame advantage stored directly in the sidecar."""
+        arr = self._episode(int(episode_index))
+        t = min(int(frame_index), arr.shape[0] - 1)
+        return np.float32(arr[t])
+
+    def advantage_for(self, episode_index: int, frame_index: int) -> np.float32:
+        """Return the advantage for a given (episode, frame), dispatching by scheme.
+
+        For ``adv_chunk``: returns the stored per-frame offline advantage directly.
+        For ``chunk`` / ``awr_chunk``: returns ``V(s_{t+H}) - V(s_t)`` on the fly.
+        """
+        if self._scheme == "adv_chunk":
+            return self._frame_advantage(episode_index, frame_index)
+        return self._chunk_advantage(episode_index, frame_index)
+
     def _transform_weight(self, raw: np.ndarray | float) -> np.ndarray | np.float32:
         if self._scheme in ("awr", "awr_chunk"):
             return np.exp(np.clip(np.asarray(raw) / self._beta, -self._clip, self._clip))
@@ -192,10 +262,13 @@ class RewardLookup:
         return np.float32(self._transform_weight(raw))
 
     def all_per_frame_weights(self) -> dict[int, np.ndarray]:
-        """Return ``{episode_index: weight_per_frame}`` matching ``weight_for``.
+        """Return ``{episode_index: weight_per_frame}`` matching ``weight_for``/``advantage_for``.
 
-        Used by :class:`FilteredLeRobotDataset` so the prefilter thresholds and
-        the per-sample weights are computed identically.
+        For ``adv_chunk``: returns the raw stored advantage arrays (no transform).
+        For other schemes: same as before.
+
+        Used by :class:`FilteredLeRobotDataset` and the CFGRL threshold computation
+        so the prefilter thresholds and per-sample values are computed identically.
         """
         out: dict[int, np.ndarray] = {}
         for path in sorted(self._dir.glob("episode_*.npy")):
@@ -206,30 +279,51 @@ class RewardLookup:
                 out[ep_idx] = np.zeros(0, dtype=np.float32)
                 continue
             H = self._action_horizon
-            if self._scheme in ("chunk", "awr_chunk"):
+            if self._scheme == "adv_chunk":
+                # Stored values are already per-frame offline advantages.
+                out[ep_idx] = arr.astype(np.float32)
+            elif self._scheme in ("chunk", "awr_chunk"):
                 # V(s_{min(t+H, T-1)}) - V(s_t) for every t in [0..n-1]
                 t_next = np.minimum(np.arange(n) + H, n - 1)
                 raw = (arr[t_next] - arr).astype(np.float32)
+                out[ep_idx] = np.asarray(self._transform_weight(raw), dtype=np.float32)
             else:
                 # Action-chunk mean for every t with replicate-pad at the tail.
                 padded = np.concatenate([arr, np.full(max(0, H - 1), arr[-1], dtype=np.float32)])
                 # csum trick: mean = (csum[t+H] - csum[t]) / H
                 csum = np.concatenate([[0.0], np.cumsum(padded.astype(np.float64))])
                 raw = ((csum[H:n + H] - csum[:n]) / H).astype(np.float32)
-            out[ep_idx] = np.asarray(self._transform_weight(raw), dtype=np.float32)
+                out[ep_idx] = np.asarray(self._transform_weight(raw), dtype=np.float32)
         return out
 
 
 @dataclasses.dataclass(frozen=True)
 class AddRewardWeight(_transforms.DataTransformFn):
-    """Inject a per-sample scalar ``weight`` from a :class:`RewardLookup`."""
+    """Inject a per-sample scalar ``weight`` from a :class:`RewardLookup``.
+
+    For chunk-based schemes (``"chunk"``, ``"awr_chunk"``), also injects
+    ``"advantage"`` = raw ``V(s_{t+H}) - V(s_t)`` (before the AWR exp transform)
+    so the pre-transform signal can be monitored in wandb.
+    """
 
     lookup: RewardLookup
 
     def __call__(self, data):
         ep = int(np.asarray(data["episode_index"]).item())
         frame = int(np.asarray(data["frame_index"]).item())
-        return {**data, "weight": self.lookup.weight_for(ep, frame)}
+        out = {**data, "weight": self.lookup.weight_for(ep, frame)}
+        if self.lookup.weight_scheme in ("chunk", "awr_chunk"):
+            adv = self.lookup._chunk_advantage(ep, frame)
+            assert np.isfinite(adv), (
+                f"AddRewardWeight: chunk advantage is non-finite ({adv}) "
+                f"for episode={ep}, frame={frame}. "
+                "Check that the reward sidecar contains valid finite values."
+            )
+            out["advantage"] = np.float32(adv)
+        else:
+            # Always emit "advantage" so the repack structure can include it unconditionally.
+            out["advantage"] = np.float32(0.0)
+        return out
 
 
 @dataclasses.dataclass(frozen=True)
@@ -251,25 +345,27 @@ class AddAdvantageIndicator(_transforms.DataTransformFn):
     """CFGRL policy extraction (π*0.6 / Recap): inject a binary advantage indicator.
 
     Appends ``"\\nAdvantage: positive"`` or ``"\\nAdvantage: negative"`` to the
-    sample's ``prompt`` based on whether the chunk advantage ``V(s_{t+H})-V(s_t)``
-    exceeds ``threshold``.  With probability ``dropout_prob`` the indicator is
-    omitted entirely (unconditional branch), enabling classifier-free guidance
-    at inference time.
+    sample's ``prompt`` based on whether the advantage exceeds ``threshold``.
+    With probability ``dropout_prob`` the indicator is omitted entirely
+    (unconditional branch), enabling classifier-free guidance at inference time.
 
     ``threshold`` should be pre-computed from the full dataset so that
     approximately ``cfgrl_positive_quantile`` of frames receive a positive label
     (see :func:`wrap_lerobot_dataset`).
 
+    The advantage source is determined by ``lookup.weight_scheme``:
+    - ``"chunk"``     – ``_chunk_advantage`` (V(s_{t+H})-V(s_t)).
+    - ``"adv_chunk"`` – ``_frame_advantage`` (stored per-frame offline advantage).
+
     When ``force_positive=True`` (SFT / demo fine-tune phase) every sample is
     labelled positive regardless of its advantage value.  Dropout still applies
     unless also disabled.
 
-    The ``lookup`` must have been constructed with ``weight_scheme="chunk"`` so
-    that ``_chunk_advantage`` returns raw ``V(s_{t+H})-V(s_t)`` values.
-
     Always emits ``weight=1.0`` so :class:`RepackTransform` (which expects
     ``weight`` whenever ``reward_name`` is set) and the training loop keep working;
     CFGRL does not use advantage-weighted loss.
+
+    Also emits ``advantage`` (raw float32 scalar) for per-batch wandb logging.
     """
 
     lookup: RewardLookup
@@ -280,15 +376,20 @@ class AddAdvantageIndicator(_transforms.DataTransformFn):
     force_positive: bool = False
 
     def __call__(self, data):
-        out = {**data, "weight": np.float32(1.0)}
+        ep = int(np.asarray(data["episode_index"]).item())
+        frame = int(np.asarray(data["frame_index"]).item())
+        adv = float(self.lookup.advantage_for(ep, frame))
+        assert np.isfinite(adv), (
+            f"AddAdvantageIndicator: advantage is non-finite ({adv}) "
+            f"for episode={ep}, frame={frame}, scheme={self.lookup.weight_scheme!r}. "
+            "Check that the advantage sidecar contains valid finite values."
+        )
+        out = {**data, "weight": np.float32(1.0), "advantage": np.float32(adv)}
         if not self.force_positive and np.random.random() < self.dropout_prob:
             return out  # unconditional branch (no indicator suffix)
         if self.force_positive:
             label = self.positive_text
         else:
-            ep = int(np.asarray(data["episode_index"]).item())
-            frame = int(np.asarray(data["frame_index"]).item())
-            adv = float(self.lookup._chunk_advantage(ep, frame))
             label = self.positive_text if adv > self.threshold else self.negative_text
         prompt = data.get("prompt", "")
         if not isinstance(prompt, str):
@@ -418,8 +519,14 @@ def wrap_lerobot_dataset(dataset, data_config, action_horizon: int, *, repo_id: 
     When ``data_config.cfgrl_enabled`` is ``True`` the dataset uses CFGRL
     policy extraction instead of AWR sample weighting: a binary advantage
     indicator (``"Advantage: positive/negative"``) is appended to each
-    sample's prompt with CFG-style dropout.  ``reward_name`` must point at a
-    value function directory (containing ``episode_*.npy`` with V(s_t) estimates).
+    sample's prompt with CFG-style dropout.
+
+    Two CFGRL advantage sources are available via ``data_config.weight_scheme``:
+    - ``"chunk"`` (default): on-the-fly ``V(s_{t+H})-V(s_t)`` from the reward
+      sidecar.  ``reward_name`` must contain ``"reward"``.
+    - ``"adv_chunk"``: per-frame offline advantage derived from ``reward_name``
+      (which must end in ``_reward``) using ``cfgrl_advantage_gamma`` and
+      ``cfgrl_advantage_delta`` to locate the precomputed sidecar.
     """
     if data_config.reward_name is None:
         return dataset
@@ -429,13 +536,23 @@ def wrap_lerobot_dataset(dataset, data_config, action_horizon: int, *, repo_id: 
 
     cfgrl_enabled = getattr(data_config, "cfgrl_enabled", False)
 
+    # Determine the effective weight scheme.
+    if cfgrl_enabled:
+        user_ws = getattr(data_config, "weight_scheme", "chunk")
+        weight_scheme = "adv_chunk" if user_ws == "adv_chunk" else "chunk"
+    else:
+        weight_scheme = getattr(data_config, "weight_scheme", "awr")
+
     lookup = RewardLookup(
         repo_id=repo_id,
         reward_name=data_config.reward_name,
         action_horizon=action_horizon,
         lerobot_home=data_config.lerobot_home,
+        revision=getattr(data_config, "reward_revision", None),
         beta=getattr(data_config, "reward_beta", 2.0),
-        weight_scheme="chunk" if cfgrl_enabled else getattr(data_config, "weight_scheme", "awr"),
+        weight_scheme=weight_scheme,
+        advantage_gamma=getattr(data_config, "cfgrl_advantage_gamma", 0.99),
+        advantage_delta=getattr(data_config, "cfgrl_advantage_delta", True),
     )
 
     weight_quantile = getattr(data_config, "weight_quantile", None)
@@ -450,7 +567,7 @@ def wrap_lerobot_dataset(dataset, data_config, action_horizon: int, *, repo_id: 
 
     if cfgrl_enabled:
         # Compute global advantage threshold from a single pass over all episode files.
-        # all_per_frame_weights() with scheme="chunk" returns raw V(s_{t+H})-V(s_t).
+        # all_per_frame_weights() returns raw advantages for both "chunk" and "adv_chunk".
         per_ep_adv = lookup.all_per_frame_weights()
         if not per_ep_adv:
             raise RuntimeError(f"No reward files found in {lookup.reward_dir} for CFGRL threshold computation.")
@@ -459,19 +576,44 @@ def wrap_lerobot_dataset(dataset, data_config, action_horizon: int, *, repo_id: 
         threshold = float(np.quantile(all_adv, 1.0 - positive_quantile))
         actual_positive_frac = float((all_adv > threshold).mean())
         logger.info(
-            "CFGRL: threshold=%.4g  (target positive=%.0f%%  actual=%.1f%%  n_frames=%d)",
-            threshold, 100 * positive_quantile, 100 * actual_positive_frac, all_adv.size,
+            "CFGRL: scheme=%s  threshold=%.4g  (target positive=%.0f%%  actual=%.1f%%  n_frames=%d)",
+            weight_scheme, threshold, 100 * positive_quantile, 100 * actual_positive_frac, all_adv.size,
         )
-        transforms: list[_transforms.DataTransformFn] = [
-            AddAdvantageIndicator(
-                lookup=lookup,
-                threshold=threshold,
-                dropout_prob=getattr(data_config, "cfgrl_dropout_prob", 0.30),
-                force_positive=getattr(data_config, "cfgrl_force_positive", False),
-            )
-        ]
+
+        # Log global advantage stats to wandb once at step 0 (wandb must already be init'd).
+        try:
+            import wandb as _wandb
+            if _wandb.run is not None:
+                _wandb.log(
+                    {
+                        "cfgrl/advantage_hist": _wandb.Histogram(all_adv.tolist()),
+                        "cfgrl/global_mean": float(all_adv.mean()),
+                        "cfgrl/global_std": float(all_adv.std()),
+                        "cfgrl/threshold": threshold,
+                        "cfgrl/actual_positive_frac": actual_positive_frac,
+                        "cfgrl/n_frames": int(all_adv.size),
+                    },
+                    step=0,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not log CFGRL global stats to wandb: %s", e)
+
+        # AddAdvantageIndicator needs episode_index / frame_index from the raw sample.
+        # Those fields are preserved through the repack (config.py adds them to
+        # repack_structure) so the indicator is applied as a *post-repack* transform.
+        # We stash it on the dataset via _cfgrl_post_transforms; create_torch_data_loader
+        # picks it up and applies it after transform_dataset().
+        cfgrl_indicator = AddAdvantageIndicator(
+            lookup=lookup,
+            threshold=threshold,
+            dropout_prob=getattr(data_config, "cfgrl_dropout_prob", 0.30),
+            force_positive=getattr(data_config, "cfgrl_force_positive", False),
+        )
+        transforms: list[_transforms.DataTransformFn] = []
+        cfgrl_post_transforms: list[_transforms.DataTransformFn] = [cfgrl_indicator]
     else:
         transforms = [AddRewardWeight(lookup=lookup)]
+        cfgrl_post_transforms = []
 
     if getattr(data_config, "override_prompt_from_reward", False):
         if not lookup.reference_instruction:
@@ -480,6 +622,10 @@ def wrap_lerobot_dataset(dataset, data_config, action_horizon: int, *, repo_id: 
                 f"has no reference_instruction in config.json. Re-run annotate_rewards_joint.py "
                 f"with --reference-instruction."
             )
+        # OverrideTaskPrompt must run before the repack so the prompt key survives.
         transforms.append(OverrideTaskPrompt(prompt=lookup.reference_instruction))
 
-    return TransformedDataset(dataset, transforms)
+    wrapped = TransformedDataset(dataset, transforms) if transforms else dataset
+    # Expose post-repack transforms so the data loader can apply them after RepackTransform.
+    wrapped._cfgrl_post_transforms = cfgrl_post_transforms  # type: ignore[attr-defined]
+    return wrapped

@@ -196,8 +196,21 @@ def create_rlds_dataset(
     )
 
 
-def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip_norm_stats: bool = False) -> Dataset:
-    """Transform the dataset by applying the data transforms."""
+def transform_dataset(
+    dataset: Dataset,
+    data_config: _config.DataConfig,
+    *,
+    skip_norm_stats: bool = False,
+    pre_data_transforms: list[_transforms.DataTransformFn] | None = None,
+) -> Dataset:
+    """Transform the dataset by applying the data transforms.
+
+    ``pre_data_transforms`` are inserted between the repack transforms and the
+    data transforms.  This is the correct injection point for
+    :class:`AddAdvantageIndicator`: after the repack (so ``episode_index`` /
+    ``frame_index`` are available) but before ``YAMInputs`` (so ``prompt`` can
+    still be modified and ``advantage`` can be passed through).
+    """
     norm_stats = {}
     if data_config.repo_id != "fake" and not skip_norm_stats:
         if data_config.norm_stats is None:
@@ -211,6 +224,7 @@ def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip
         dataset,
         [
             *data_config.repack_transforms.inputs,
+            *(pre_data_transforms or []),
             *data_config.data_transforms.inputs,
             _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
             *data_config.model_transforms.inputs,
@@ -327,7 +341,21 @@ def create_torch_data_loader(
         seed: The seed to use for shuffling the data.
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
-    dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
+
+    # Retrieve CFGRL post-repack transforms (e.g. AddAdvantageIndicator) attached by
+    # wrap_lerobot_dataset.  They are injected between the repack and data transforms
+    # so that:
+    #   1. episode_index / frame_index are available (preserved by repack_structure).
+    #   2. prompt can be modified before TokenizePrompt runs.
+    #   3. advantage / weight survive through YAMInputs (which has explicit passthroughs).
+    cfgrl_post_transforms = getattr(dataset, "_cfgrl_post_transforms", [])
+
+    dataset = transform_dataset(
+        dataset,
+        data_config,
+        skip_norm_stats=skip_norm_stats,
+        pre_data_transforms=cfgrl_post_transforms or None,
+    )
 
     # Use TorchDataLoader for both frameworks
     # For PyTorch DDP, create DistributedSampler and divide batch size by world size
@@ -563,6 +591,13 @@ class DataLoaderImpl(DataLoader):
         return self._data_config
 
     def __iter__(self):
+        _advantage_schemes = ("chunk", "awr_chunk", "adv_chunk")
+        _expects_advantage = (
+            getattr(self._data_config, "cfgrl_enabled", False)
+            or getattr(self._data_config, "weight_scheme", "awr") in _advantage_schemes
+        )
+        _reward_configured = getattr(self._data_config, "reward_name", None) is not None
+
         for batch in self._data_loader:
             observation = _model.Observation.from_dict(batch)
             actions = batch["actions"]
@@ -571,4 +606,30 @@ class DataLoaderImpl(DataLoader):
                 weights = np.ones(actions.shape[0], dtype=np.float32)
             else:
                 weights = np.asarray(weights, dtype=np.float32)
-            yield observation, actions, weights
+            advantages = batch.get("advantage")
+            # When a reward sidecar is configured, "advantage" must always be present —
+            # AddRewardWeight / AddAdvantageIndicator emit it unconditionally and
+            # repack_structure always includes it.
+            assert not (_reward_configured and advantages is None), (
+                "DataLoaderImpl: expected 'advantage' field in batch "
+                f"(reward_name={getattr(self._data_config, 'reward_name', None)!r}, "
+                f"weight_scheme={getattr(self._data_config, 'weight_scheme', 'awr')!r}, "
+                f"cfgrl_enabled={getattr(self._data_config, 'cfgrl_enabled', False)}) "
+                "but it is missing. For CFGRL: ensure episode_index/frame_index are in "
+                "repack_structure and _cfgrl_post_transforms is set by wrap_lerobot_dataset, "
+                "then passed as pre_data_transforms to transform_dataset. "
+                "For non-CFGRL: ensure weight/advantage are in repack_structure (AddRewardWeight "
+                "emits them pre-repack) and YAMInputs passes 'advantage' through."
+            )
+            if advantages is None:
+                advantages = np.zeros(actions.shape[0], dtype=np.float32)
+            else:
+                advantages = np.asarray(advantages, dtype=np.float32)
+                if _expects_advantage:
+                    assert np.any(advantages != 0.0), (
+                        "DataLoaderImpl: advantage batch is all-zeros despite "
+                        f"weight_scheme={getattr(self._data_config, 'weight_scheme', 'awr')!r} / "
+                        f"cfgrl_enabled={getattr(self._data_config, 'cfgrl_enabled', False)}. "
+                        "Check that AddAdvantageIndicator / AddRewardWeight emits non-zero advantages."
+                    )
+            yield observation, actions, weights, advantages

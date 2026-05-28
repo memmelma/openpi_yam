@@ -76,6 +76,9 @@ class YAMInputs(transforms.DataTransformFn):
         if "weight" in data:
             inputs["weight"] = data["weight"]
 
+        if "advantage" in data:
+            inputs["advantage"] = data["advantage"]
+
         return inputs
 
 
