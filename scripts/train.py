@@ -138,7 +138,7 @@ def train_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
-    batch: tuple[_model.Observation, _model.Actions, at.Float[at.Array, "b"]],
+    batch: tuple[_model.Observation, _model.Actions, at.Float[at.Array, "b"], at.Float[at.Array, "b"]],
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
@@ -158,7 +158,7 @@ def train_step(
         return jnp.mean(weights * per_sample)
 
     train_rng = jax.random.fold_in(rng, state.step)
-    observation, actions, weights = batch
+    observation, actions, weights, advantages = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
@@ -201,6 +201,22 @@ def train_step(
         "rewards/max_weight": jnp.max(weights),
         "rewards/std_weight": jnp.std(weights),
     }
+
+    # Per-batch advantage logging for any chunk-based or CFGRL scheme.
+    # For awr_chunk/chunk: "advantage" = raw V(t+H)-V(t) before the exp transform.
+    # For adv_chunk / CFGRL: "advantage" = offline per-frame advantage from sidecar.
+    data_config = config.data.base_config if hasattr(config.data, "base_config") else None
+    _advantage_schemes = ("chunk", "awr_chunk", "adv_chunk")
+    _log_advantages = data_config is not None and (
+        getattr(data_config, "cfgrl_enabled", False)
+        or getattr(data_config, "weight_scheme", "awr") in _advantage_schemes
+    )
+    if _log_advantages:
+        info["cfgrl/advantage_mean"] = jnp.mean(advantages)
+        info["cfgrl/advantage_min"] = jnp.min(advantages)
+        info["cfgrl/advantage_max"] = jnp.max(advantages)
+        info["cfgrl/advantage_std"] = jnp.std(advantages)
+
     return new_state, info
 
 

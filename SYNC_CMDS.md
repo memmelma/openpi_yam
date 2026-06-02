@@ -1,0 +1,8 @@
+CKPT=30000
+
+rsync -avzP --mkpath /gpfs/home/memmelma/projects/openpi_yam/checkpoints/cfgrl_candy_05_26_adv_rvlm/cfgrl_candy_05_26_adv_rvlm/$CKPT yam:/home/reward/Projects/openpi_yam/checkpoints/cfgrl_candy_05_26_adv_rvlm/cfgrl_candy_05_26_adv_rvlm/
+rsync -avzP --mkpath /gpfs/home/memmelma/projects/openpi_yam/checkpoints/cfgrl_candy_05_26_adv_rbm/cfgrl_candy_05_26_adv_rbm/$CKPT yam:/home/reward/Projects/openpi_yam/checkpoints/cfgrl_candy_05_26_adv_rbm/cfgrl_candy_05_26_adv_rbm/
+rsync -avzP --mkpath /gpfs/home/memmelma/projects/openpi_yam/checkpoints/cfgrl_candy_05_26_adv_topreward/cfgrl_candy_05_26_adv_topreward/$CKPT yam:/home/reward/Projects/openpi_yam/checkpoints/cfgrl_candy_05_26_adv_topreward/cfgrl_candy_05_26_adv_topreward/
+rsync -avzP --mkpath /gpfs/home/memmelma/projects/openpi_yam/checkpoints/cfgrl_ethernet_05_26_adv_rvlm/cfgrl_ethernet_05_26_adv_rvlm/$CKPT yam:/home/reward/Projects/openpi_yam/checkpoints/cfgrl_ethernet_05_26_adv_rvlm/cfgrl_ethernet_05_26_adv_rvlm/
+rsync -avzP --mkpath /gpfs/home/memmelma/projects/openpi_yam/checkpoints/cfgrl_ethernet_05_26_adv_rbm/cfgrl_ethernet_05_26_adv_rbm/$CKPT yam:/home/reward/Projects/openpi_yam/checkpoints/cfgrl_ethernet_05_26_adv_rbm/cfgrl_ethernet_05_26_adv_rbm/
+rsync -avzP --mkpath /gpfs/home/memmelma/projects/openpi_yam/checkpoints/cfgrl_ethernet_05_26_adv_topreward/cfgrl_ethernet_05_26_adv_topreward/$CKPT yam:/home/reward/Projects/openpi_yam/checkpoints/cfgrl_ethernet_05_26_adv_topreward/cfgrl_ethernet_05_26_adv_topreward/
