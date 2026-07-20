@@ -2995,6 +2995,36 @@ _CONFIGS = [
         ema_decay=None,
     ),
 
+    # plain BC - candy_06_15 optimal
+    TrainConfig(
+        name="bc_candy_06_15_optimal",
+        model=pi0_config.Pi0Config(pi05=True, paligemma_variant="gemma_2b_lora"),
+        data=LeRobotYAMDataConfig(
+            repo_id="memmelma/MnMs_to_skittles_optimal",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                reward_name="success_reward",
+                weight_quantile=None,
+                weight_cutoff=0.5,
+                weight_scheme="default",
+                override_prompt_from_reward=True,
+                lerobot_home="/gpfs/scrubbed/memmelma/projects/openpi_yam/data",
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        checkpoint_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/checkpoints",
+        assets_base_dir="/gpfs/scrubbed/memmelma/projects/openpi_yam/assets",
+        num_train_steps=50_000,
+        batch_size=32,
+        num_workers=8,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
